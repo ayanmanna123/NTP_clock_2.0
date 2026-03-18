@@ -27,8 +27,21 @@
 #include "Arduino.h"
 #include <EEPROM.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 
 WiFiClient client;
+ESP8266WebServer server(80);
+
+bool show12HourClock = true;
+bool show24HourClock = true;
+bool showDate = true;
+bool showWeather = true;
+bool showHoliday = true;
+bool autoBrightness = true;
+int manualBrightness = 1; // Default DAY_INTENSITY
+bool showCustomText = false;
+String customText = "";
+bool displayPower = true;
 
 String date;
 // String temp = " Temp: --C";           // Default value before fetching data
@@ -168,15 +181,15 @@ float tempFloat1 = 0.0;
 
 #define RELAY_PIN 4
 
-// Night Mode Settings
+
 #define DAY_INTENSITY 1
 #define NIGHT_INTENSITY 0
 #define NIGHT_START 18 // 6 PM
 #define NIGHT_END 9    // 9 AM
 
 // Deep Night Mode (Display completely OFF)
-#define DEEP_NIGHT_START 1 // 1 AM
-#define DEEP_NIGHT_END 9   // 9 AM
+#define DEEP_NIGHT_START 2 // 1 AM
+#define DEEP_NIGHT_END 7   // 9 AM
 
 // =======================================================================
 // CHANGE YOUR CONFIG HERE:
@@ -185,6 +198,70 @@ const char *ssid = "aniket_4g";       // SSID of local network
 const char *password = "kolkata2003"; // Password on network
 
 // =======================================================================
+
+void smartDelay(unsigned long ms) {
+  unsigned long start = millis();
+  while (millis() - start < ms) {
+    server.handleClient();
+    yield();
+  }
+}
+
+void handleRoot() {
+  String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<style>body{font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background-color: #121212; color: #ffffff;}";
+  html += "form{display: inline-block; text-align: left; padding: 25px; border: 1px solid #333; border-radius: 12px; background-color: #1e1e1e;}";
+  html += "input[type=checkbox]{margin-right: 10px; transform: scale(1.5);}";
+  html += "label{font-size: 18px; margin-bottom: 10px; display: block;}";
+  html += "input[type=submit]{margin-top: 20px; padding: 12px 24px; font-size: 16px; background-color: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;}</style></head><body>";
+  html += "<h2>NTP Clock Settings</h2>";
+  html += "<form action='/update' method='GET'>";
+  
+  html += "<div style='margin-bottom: 20px; font-weight: bold;'>";
+  html += "<label><input type='checkbox' name='power' value='1' " + String(displayPower ? "checked" : "") + "> Display ON/OFF</label>";
+  html += "</div>";
+  html += "<hr style='border:1px solid #444; margin: 20px 0;'>";
+
+  html += "<label><input type='checkbox' name='12h' value='1' " + String(show12HourClock ? "checked" : "") + "> Show 12-Hour Clock</label>";
+  html += "<label><input type='checkbox' name='24h' value='1' " + String(show24HourClock ? "checked" : "") + "> Show 24-Hour Clock</label>";
+  html += "<label><input type='checkbox' name='date' value='1' " + String(showDate ? "checked" : "") + "> Show Date</label>";
+  html += "<label><input type='checkbox' name='weather' value='1' " + String(showWeather ? "checked" : "") + "> Show Weather Details</label>";
+  html += "<label><input type='checkbox' name='holiday' value='1' " + String(showHoliday ? "checked" : "") + "> Show Holiday Details</label>";
+  
+  html += "<hr style='border:1px solid #444; margin: 20px 0;'>";
+  html += "<label><input type='checkbox' name='show_custom' value='1' " + String(showCustomText ? "checked" : "") + "> Show Custom Text</label>";
+  html += "<input type='text' name='custom_text' value='" + customText + "' style='width: 100%; max-width: 300px; padding: 10px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #555; background: #222; color: #fff;' placeholder='Enter text to display...'><br>";
+
+  html += "<hr style='border:1px solid #444; margin: 20px 0;'>";
+  html += "<label><input type='checkbox' name='auto_bright' value='1' onchange='document.getElementById(\"mb_slider\").disabled = this.checked;' " + String(autoBrightness ? "checked" : "") + "> Auto Brightness</label>";
+  html += "<label style='margin-bottom:0;'>Manual Level (0-15): </label>";
+  html += "<input type='range' id='mb_slider' name='brightness' min='0' max='15' value='" + String(manualBrightness) + "' style='width: 100%; max-width: 300px; padding: 10px 0;' " + String(autoBrightness ? "disabled" : "") + "><br>";
+
+  html += "<input type='submit' value='Update Settings'>";
+  html += "</form></body></html>";
+  
+  server.send(200, "text/html", html);
+}
+
+void handleUpdate() {
+  displayPower = server.hasArg("power");
+  show12HourClock = server.hasArg("12h");
+  show24HourClock = server.hasArg("24h");
+  showDate = server.hasArg("date");
+  showWeather = server.hasArg("weather");
+  showHoliday = server.hasArg("holiday");
+  showCustomText = server.hasArg("show_custom");
+  if (server.hasArg("custom_text")) {
+    customText = server.arg("custom_text");
+  }
+  autoBrightness = server.hasArg("auto_bright");
+  if (server.hasArg("brightness")) {
+    manualBrightness = server.arg("brightness").toInt();
+  }
+  
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
 
 void setup() {
   Serial.begin(115200);
@@ -225,6 +302,11 @@ void setup() {
   Serial.println(WiFi.localIP());
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW);
+
+  server.on("/", handleRoot);
+  server.on("/update", handleUpdate);
+  server.begin();
+  Serial.println("HTTP server started");
 }
 // =======================================================================
 #define MAX_DIGITS 16
@@ -241,6 +323,8 @@ byte del = 0;
 int h, m, s;
 // =======================================================================
 void loop() {
+  server.handleClient();
+
   if (updCnt <= 0) { // Every 10 scrolls (~7.5 minutes)
     updCnt = 10;
     Serial.println("Getting data...");
@@ -256,53 +340,65 @@ void loop() {
   }
 
   // Show Date → Show Temperature → Show Time
-  if (millis() - clkTime > 40000 && !del && dots) {
+  if (millis() - clkTime > 40000 && !del && dots && displayPower) {
     clkTime = millis();
 
-    for (int i = 1; i < 500; i++) {
-
-      if (millis() - dotTime > 500) { // Blink dots every 500ms
-        dotTime = millis();
-        dots = !dots;
+    if (show24HourClock) {
+      for (int i = 1; i < 500; i++) {
+        server.handleClient();
+        if (millis() - dotTime > 500) { // Blink dots every 500ms
+          dotTime = millis();
+          dots = !dots;
+        }
+        updateTime1();
+        showAnimClock();
       }
-      updateTime1();
-      showAnimClock();
     }
 
-    printStringWithShift(date.c_str(), 40); // Show Date: "TUE, 04/03/2025"
-    delay(5000);
-    printStringWithShift(temp.c_str(), 40);
-    delay(5000); // Show current temperature
-    printStringWithShift(("     Max: " + String(maxTemp) + " C").c_str(), 40);
-    delay(2000);
+    if (showDate) {
+      printStringWithShift(date.c_str(), 40); // Show Date: "TUE, 04/03/2025"
+      smartDelay(5000);
+    }
 
-    printStringWithShift(("     Min: " + String(minTemp) + " C").c_str(), 40);
-    delay(2000);
-    // printStringWithShift(tempMin.c_str(), 40);  // Show min temperature
-    // delay(5000);
+    if (showWeather) {
+      printStringWithShift(temp.c_str(), 40);
+      smartDelay(5000); // Show current temperature
+      printStringWithShift(("     Max: " + String(maxTemp) + " C").c_str(), 40);
+      smartDelay(2000);
 
-    // printStringWithShift(tempMax.c_str(), 40);  // Show max temperature
-    // delay(5000);
+      printStringWithShift(("     Min: " + String(minTemp) + " C").c_str(), 40);
+      smartDelay(2000);
+      // printStringWithShift(tempMin.c_str(), 40);  // Show min temperature
+      // smartDelay(5000);
 
-    // printStringWithShift(weatherCondition.c_str(), 40);  // Show weather
-    // condition (e.g., Clouds) delay(5000);
+      // printStringWithShift(tempMax.c_str(), 40);  // Show max temperature
+      // smartDelay(5000);
 
-    printStringWithShift(weatherDescription.c_str(),
-                         40); // Show description (e.g., scattered clouds)
-    delay(5000);
+      // printStringWithShift(weatherCondition.c_str(), 40);  // Show weather
+      // condition (e.g., Clouds) smartDelay(5000);
 
-    printStringWithShift(windSpeed.c_str(), 40); // Show wind speed
-    delay(5000);
-    printStringWithShift(aqiDisplay.c_str(), 40);
-    delay(5000);
+      printStringWithShift(weatherDescription.c_str(),
+                           40); // Show description (e.g., scattered clouds)
+      smartDelay(5000);
 
-    if (holidayToday.length() > 0) {
+      printStringWithShift(windSpeed.c_str(), 40); // Show wind speed
+      smartDelay(5000);
+      printStringWithShift(aqiDisplay.c_str(), 40);
+      smartDelay(5000);
+    }
+
+    if (showHoliday && holidayToday.length() > 0) {
       printStringWithShift(holidayToday.c_str(), 40);
-      delay(3000);
+      smartDelay(3000);
       if (holidayDescription.length() > 0) {
         printStringWithShift(holidayDescription.c_str(), 40);
-        delay(3000);
+        smartDelay(3000);
       }
+    }
+
+    if (showCustomText && customText.length() > 0) {
+      printStringWithShift(("   " + customText).c_str(), 40);
+      smartDelay(3000);
     }
 
     updCnt--;
@@ -314,10 +410,23 @@ void loop() {
     dots = !dots;
   }
 
-  updateTime();       // Update the time
   updateBrightness(); // Adjust brightness based on time
-  showAnimClock();
-  // Show animated clock
+
+  if (displayPower) {
+    if (show12HourClock) {
+      updateTime();       // Update the time
+      showAnimClock();
+    } else if (show24HourClock) {
+      updateTime1();      // Fallback to 24h format if 12h is disabled
+      showAnimClock();
+    } else {
+      clr();              // Clear display if both clocks are disabled
+      refreshAll();
+    }
+  } else {
+    clr();
+    refreshAll();
+  }
 }
 
 // =======================================================================
@@ -375,7 +484,7 @@ void showAnimClock() {
   setCol(22, dots ? B00100100 : 0);
   setCol(39, dots ? B00100100 : 0);
   refreshAll();
-  delay(30);
+  smartDelay(30);
 }
 
 // =======================================================================
@@ -429,7 +538,7 @@ void printCharWithShift(unsigned char c, int shiftDelay) {
   c -= 32;
   int w = showChar(c, font);
   for (int i = 0; i < w + 1; i++) {
-    delay(shiftDelay);
+    smartDelay(shiftDelay);
     scrollLeft();
     refreshAll();
   }
@@ -737,16 +846,20 @@ void updateBrightness() {
   static bool lastPowerState = true; // true = ON, false = OFF
 
   int currentIntensity = DAY_INTENSITY;
-  bool currentPowerState = true;
+  bool currentPowerState = displayPower;
 
-  // Night Mode logic
-  if (hour24 >= NIGHT_START || hour24 < NIGHT_END) {
-    currentIntensity = NIGHT_INTENSITY;
-  }
+  if (autoBrightness && currentPowerState) {
+    // Night Mode logic
+    if (hour24 >= NIGHT_START || hour24 < NIGHT_END) {
+      currentIntensity = NIGHT_INTENSITY;
+    }
 
-  // Deep Night Mode logic (Shut down display)
-  if (hour24 >= DEEP_NIGHT_START && hour24 < DEEP_NIGHT_END) {
-    currentPowerState = false;
+    // Deep Night Mode logic (Shut down display)
+    if (hour24 >= DEEP_NIGHT_START && hour24 < DEEP_NIGHT_END) {
+      currentPowerState = false;
+    }
+  } else if (currentPowerState) {
+    currentIntensity = manualBrightness;
   }
 
   // Handle Power State (Shutdown/Wakeup)
