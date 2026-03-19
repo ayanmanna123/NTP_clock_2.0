@@ -527,20 +527,34 @@ void showAnimClock() {
   int digHt = 12;
   int num = 6;
   int i;
+  
   if (del == 0) {
-    del = digHt;
-    for (i = 0; i < num; i++)
-      digold[i] = dig[i];
-    dig[0] = h / 10 ? h / 10 : 10;
-    dig[1] = h % 10;
-    dig[2] = m / 10;
-    dig[3] = m % 10;
-    dig[4] = s / 10;
-    dig[5] = s % 10;
-    for (i = 0; i < num; i++)
-      digtrans[i] = (dig[i] == digold[i]) ? 0 : digHt;
-  } else
+    byte newDig[6];
+    newDig[0] = h / 10 ? h / 10 : 10;
+    newDig[1] = h % 10;
+    newDig[2] = m / 10;
+    newDig[3] = m % 10;
+    newDig[4] = s / 10;
+    newDig[5] = s % 10;
+    
+    bool changed = false;
+    for (i = 0; i < num; i++) {
+      if (newDig[i] != dig[i]) {
+        changed = true;
+      }
+    }
+    
+    if (changed) {
+      del = digHt;
+      for (i = 0; i < num; i++) {
+        digold[i] = dig[i];
+        dig[i] = newDig[i];
+        digtrans[i] = (dig[i] == digold[i]) ? 0 : digHt;
+      }
+    }
+  } else {
     del--;
+  }
 
   clr();
   for (i = 0; i < num; i++) {
