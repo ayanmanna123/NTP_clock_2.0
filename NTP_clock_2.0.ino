@@ -397,17 +397,22 @@ void loop() {
   }
 
   // Show Date → Show Temperature → Show Time
-  if (millis() - clkTime > 40000 && !del && dots && displayPower) {
+  unsigned long carouselDelay = (show12HourClock || show24HourClock) ? 40000 : 5000;
+  if (millis() - clkTime > carouselDelay && !del && dots && displayPower) {
     clkTime = millis();
 
-    if (show24HourClock) {
+    if (show12HourClock || show24HourClock) {
       for (int i = 1; i < 500; i++) {
         server.handleClient();
         if (millis() - dotTime > 500) { // Blink dots every 500ms
           dotTime = millis();
           dots = !dots;
         }
-        updateTime1();
+        if (show12HourClock) {
+          updateTime();
+        } else {
+          updateTime1();
+        }
         showAnimClock();
       }
     }
@@ -470,19 +475,23 @@ void loop() {
   updateBrightness(); // Adjust brightness based on time
 
   if (displayPower) {
-    if (show12HourClock) {
-      updateTime();       // Update the time
-      showAnimClock();
-    } else if (show24HourClock) {
-      updateTime1();      // Fallback to 24h format if 12h is disabled
+    if (show12HourClock || show24HourClock) {
+      if (show12HourClock) {
+        updateTime();       // Update the time
+      } else {
+        updateTime1();      // Fallback to 24h format if 12h is disabled
+      }
       showAnimClock();
     } else {
+      del = 0;            // Release animation lock
       clr();              // Clear display if both clocks are disabled
       refreshAll();
+      smartDelay(50);     // Prevent SPI hardware lockup from continuous high-speed loop
     }
   } else {
     clr();
     refreshAll();
+    smartDelay(100);      // Throttle SPI when display is powered down
   }
 }
 
@@ -745,6 +754,9 @@ void updateTime() {
 
   m = (epoch % 3600) / 60;
   s = epoch % 60;
+  
+  if (h < 0) h = 0;
+  if (h > 99) h = 99;
 }
 
 void updateTime1() {
@@ -754,6 +766,9 @@ void updateTime1() {
   h = (epoch % 86400L) / 3600; // Keep 24-hour format
   m = (epoch % 3600) / 60;
   s = epoch % 60;
+  
+  if (h < 0) h = 0;
+  if (h > 99) h = 99;
 }
 
 String apiKey = "aadde4019b15170339824527dc726672"; // Replace with your
