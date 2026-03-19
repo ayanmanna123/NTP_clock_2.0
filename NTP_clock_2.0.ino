@@ -224,6 +224,15 @@ void handleRoot() {
   html += "label{font-size: 18px; margin-bottom: 10px; display: block;}";
   html += "input[type=submit]{margin-top: 20px; padding: 12px 24px; font-size: 16px; background-color: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;}</style></head><body>";
   html += "<h2>NTP Clock Settings</h2>";
+  
+  unsigned long uptimeMillis = millis();
+  unsigned long days = uptimeMillis / 86400000;
+  unsigned long hours = (uptimeMillis / 3600000) % 24;
+  unsigned long mins = (uptimeMillis / 60000) % 60;
+  unsigned long secs = (uptimeMillis / 1000) % 60;
+  String uptimeStr = String(days) + "d " + String(hours) + "h " + String(mins) + "m " + String(secs) + "s";
+  html += "<p style='color: #bbb; font-size: 16px; margin-top: -10px; margin-bottom: 20px;'>Uptime: " + uptimeStr + "</p>";
+
   html += "<form action='/update' method='GET'>";
   
   html += "<div style='margin-bottom: 20px; font-weight: bold;'>";
