@@ -63,6 +63,7 @@ String holidayDescription = "";
 String aqiDisplay = "";
 String lat = "22.5726"; // Kolkata
 String lon = "88.3639"; // Kolkata
+int updCnt = 0; // Move updCnt here so it's globally accessible
 
 // EEPROM Addresses
 #define ADDR_MIN_TEMP 0
@@ -294,6 +295,9 @@ void handleUpdate() {
   EEPROM.put(ADDR_MANUAL_BRIGHT, manualBrightness);
   EEPROM.commit();
 
+  updCnt = 0; // Force data fetch immediately after settings are updated
+
+
   server.sendHeader("Location", "/");
   server.send(303);
 }
@@ -379,7 +383,6 @@ void setup() {
 byte dig[MAX_DIGITS] = {0};
 byte digold[MAX_DIGITS] = {0};
 byte digtrans[MAX_DIGITS] = {0};
-int updCnt = 0;
 int dots = 0;
 long dotTime = 0;
 long clkTime = 0;
@@ -391,17 +394,34 @@ int h, m, s;
 void loop() {
   server.handleClient();
 
-  if (updCnt <= 0) { // Every 10 scrolls (~7.5 minutes)
-    updCnt = 10;
+  if (updCnt <= 0) { 
+    // If only clock (or clock+date) is selected, make the interval roughly 1 hour (90 cycles of 40-45s)
+    // If weather/holiday is selected, keep it at 10 cycles (~10-15 mins)
+    if (!showWeather && !showHoliday) {
+      updCnt = 90; 
+    } else {
+      updCnt = 10;
+    }
+    
     Serial.println("Getting data...");
-    printStringWithShift("   Getting data ", 15);
+    // Only show "Getting data" on the matrix if we're actually fetching weather/holiday
+    // to avoid interrupting the clock display unnecessarily
+    if (showWeather || showHoliday) {
+      printStringWithShift("   Getting data ", 15);
+    }
 
-    getTime(); // Fetch time
-    getTemperature();
-    getAQI();
-    getHoliday();
+    getTime(); // Always fetch time to stay in sync
+    
+    if (showWeather) {
+      getTemperature();
+      getAQI();
+    }
+    
+    if (showHoliday) {
+      getHoliday();
+    }
+    
     Serial.println("Data loaded");
-
     clkTime = millis();
   }
 
@@ -427,7 +447,7 @@ void loop() {
     }
 
     if (showDate) {
-      printStringWithShift(date.c_str(), 40); // Show Date: "TUE, 04/03/2025"
+      showCenteredText(date);
       smartDelay(5000);
     }
 
@@ -642,6 +662,39 @@ void printStringWithShift(const char *s, int shiftDelay) {
   }
 }
 
+void showCenteredText(String text) {
+  clr();
+  int totalWidth = 0;
+  for (int i = 0; i < text.length(); i++) {
+    unsigned char c = text[i];
+    if (c < ' ' || c > '~' + 25) continue;
+    c -= 32;
+    int len = pgm_read_byte(font);
+    totalWidth += pgm_read_byte(font + 1 + c * len) + 1;
+  }
+  if (totalWidth > 0) totalWidth--;
+  
+  int startCol = (NUM_MAX * 8 - totalWidth) / 2;
+  if (startCol < 0) startCol = 0;
+  
+  int currentCol = startCol;
+  for (int i = 0; i < text.length(); i++) {
+    unsigned char c = text[i];
+    if (c < ' ' || c > '~' + 25) continue;
+    c -= 32;
+    int len = pgm_read_byte(font);
+    int w = pgm_read_byte(font + 1 + c * len);
+    
+    for (int j = 0; j < w; j++) {
+      if (currentCol + j >= 0 && currentCol + j < 8 * NUM_MAX) {
+        scr[currentCol + j] = pgm_read_byte(font + 1 + c * len + 1 + j);
+      }
+    }
+    currentCol += w + 1;
+  }
+  refreshAll();
+}
+
 // =======================================================================
 
 float utcOffset = 5.5; // OFSET WAKTU
@@ -707,9 +760,8 @@ void getTime() {
 
       else
         monthNum = "??";
-      // Final formatted date: "TUE, 04/03/2025"
-      // Ensure correct date formatting
-      date = dayOfWeek + "," + day + "/" + month + "/" + year.substring(2, 4);
+      // Final formatted date fits perfectly on an 8x8 matrix (e.g. "04/03/2025")
+      date = day + "/" + monthNum + "/" + year;
 
       // Debugging: Print date in Serial Monitor
       Serial.println("Formatted Date: " + date);
