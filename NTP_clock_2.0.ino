@@ -78,6 +78,7 @@ int updCnt = 0; // Move updCnt here so it's globally accessible
 #define EEPROM_MAGIC 12345 // To check if EEPROM has been initialized
 #define ADDR_MAGIC 12
 #define EEPROM_MAGIC_V2 54321
+#define EEPROM_MAGIC_V3 54323
 #define ADDR_DISPLAY_POWER 16
 #define ADDR_SHOW_12H 17
 #define ADDR_SHOW_24H 18
@@ -856,39 +857,39 @@ void setup() {
   // Load persistent configuration and temperature data
   int magic;
   EEPROM.get(ADDR_MAGIC, magic);
-  if (magic == EEPROM_MAGIC || magic == EEPROM_MAGIC_V2) {
+  if (magic == EEPROM_MAGIC_V3) {
     EEPROM.get(ADDR_MIN_TEMP, minTemp);
     EEPROM.get(ADDR_MAX_TEMP, maxTemp);
-    if (magic == EEPROM_MAGIC_V2) {
-      EEPROM.get(ADDR_DISPLAY_POWER, displayPower);
-      EEPROM.get(ADDR_SHOW_12H, show12HourClock);
-      EEPROM.get(ADDR_SHOW_24H, show24HourClock);
-      EEPROM.get(ADDR_SHOW_DATE, showDate);
-      EEPROM.get(ADDR_SHOW_WEATHER, showWeather);
-      EEPROM.get(ADDR_SHOW_HOLIDAY, showHoliday);
-      EEPROM.get(ADDR_AUTO_BRIGHT, autoBrightness);
-      EEPROM.get(ADDR_MANUAL_BRIGHT, manualBrightness);
-      Serial.println("Restored configs from EEPROM (V2)");
-    } else {
-      // Upgrade EEPROM to V2
-      EEPROM.put(ADDR_MAGIC, EEPROM_MAGIC_V2);
-      EEPROM.put(ADDR_DISPLAY_POWER, displayPower);
-      EEPROM.put(ADDR_SHOW_12H, show12HourClock);
-      EEPROM.put(ADDR_SHOW_24H, show24HourClock);
-      EEPROM.put(ADDR_SHOW_DATE, showDate);
-      EEPROM.put(ADDR_SHOW_WEATHER, showWeather);
-      EEPROM.put(ADDR_SHOW_HOLIDAY, showHoliday);
-      EEPROM.put(ADDR_AUTO_BRIGHT, autoBrightness);
-      EEPROM.put(ADDR_MANUAL_BRIGHT, manualBrightness);
-      EEPROM.commit();
-    }
-    Serial.print("Restored Temps from EEPROM: Min=");
-    Serial.print(minTemp);
-    Serial.print(", Max=");
-    Serial.println(maxTemp);
+    EEPROM.get(ADDR_DISPLAY_POWER, displayPower);
+    EEPROM.get(ADDR_SHOW_12H, show12HourClock);
+    EEPROM.get(ADDR_SHOW_24H, show24HourClock);
+    EEPROM.get(ADDR_SHOW_DATE, showDate);
+    EEPROM.get(ADDR_SHOW_WEATHER, showWeather);
+    EEPROM.get(ADDR_SHOW_HOLIDAY, showHoliday);
+    EEPROM.get(ADDR_AUTO_BRIGHT, autoBrightness);
+    EEPROM.get(ADDR_MANUAL_BRIGHT, manualBrightness);
+    Serial.println("Restored configs from EEPROM (V3)");
+  } else if (magic == EEPROM_MAGIC_V2) {
+    EEPROM.get(ADDR_MIN_TEMP, minTemp);
+    EEPROM.get(ADDR_MAX_TEMP, maxTemp);
+    EEPROM.get(ADDR_DISPLAY_POWER, displayPower);
+    EEPROM.get(ADDR_SHOW_12H, show12HourClock);
+    EEPROM.get(ADDR_SHOW_24H, show24HourClock);
+    EEPROM.get(ADDR_SHOW_DATE, showDate);
+    EEPROM.get(ADDR_SHOW_WEATHER, showWeather);
+    EEPROM.get(ADDR_SHOW_HOLIDAY, showHoliday);
+    EEPROM.get(ADDR_MANUAL_BRIGHT, manualBrightness);
+    // Enforce default auto brightness on upgrade
+    autoBrightness = true;
+
+    // Save as V3
+    EEPROM.put(ADDR_MAGIC, EEPROM_MAGIC_V3);
+    EEPROM.put(ADDR_AUTO_BRIGHT, autoBrightness);
+    EEPROM.commit();
+    Serial.println("Upgraded configs from EEPROM (V2 -> V3) and set autoBrightness=true");
   } else {
-    // First time initialization
-    EEPROM.put(ADDR_MAGIC, EEPROM_MAGIC_V2);
+    // First time initialization or V1 upgrade
+    EEPROM.put(ADDR_MAGIC, EEPROM_MAGIC_V3);
     EEPROM.put(ADDR_MIN_TEMP, minTemp);
     EEPROM.put(ADDR_MAX_TEMP, maxTemp);
     EEPROM.put(ADDR_DISPLAY_POWER, displayPower);
@@ -900,6 +901,7 @@ void setup() {
     EEPROM.put(ADDR_AUTO_BRIGHT, autoBrightness);
     EEPROM.put(ADDR_MANUAL_BRIGHT, manualBrightness);
     EEPROM.commit();
+    Serial.println("Initialized/Upgraded EEPROM to V3 defaults");
   }
 
   Serial.print("Connecting WiFi ");
