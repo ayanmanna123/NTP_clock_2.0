@@ -810,6 +810,41 @@ void handleStopwatchStatus() {
   server.send(200, "application/json", json);
 }
 
+void showStaticIP(String ip) {
+  clr();
+  int totalWidth = 0;
+  for (int i = 0; i < ip.length(); i++) {
+    char c = ip[i];
+    if (c >= '0' && c <= '9') {
+      int digitIndex = c - '0';
+      int len = pgm_read_byte(dig3x8);
+      int w = pgm_read_byte(dig3x8 + 1 + digitIndex * len);
+      totalWidth += w + 1;
+    } else if (c == '.') {
+      totalWidth += 2;
+    }
+  }
+  if (totalWidth > 0) totalWidth--;
+
+  int col = (64 - totalWidth) / 2;
+  if (col < 0) col = 0;
+
+  for (int i = 0; i < ip.length(); i++) {
+    char c = ip[i];
+    if (c >= '0' && c <= '9') {
+      int digitIndex = c - '0';
+      showDigit(digitIndex, col, dig3x8);
+      int len = pgm_read_byte(dig3x8);
+      int w = pgm_read_byte(dig3x8 + 1 + digitIndex * len);
+      col += w + 1;
+    } else if (c == '.') {
+      setCol(col, B01000000);
+      col += 2;
+    }
+  }
+  refreshAll();
+}
+
 void setup() {
   Serial.begin(115200);
   EEPROM.begin(512);
@@ -887,6 +922,12 @@ void setup() {
   server.on("/stopwatch/status", handleStopwatchStatus);
   server.begin();
   Serial.println("HTTP server started");
+
+  // Show static IP address on MAX7219 matrix for 15 seconds on boot
+  showStaticIP(WiFi.localIP().toString());
+  smartDelay(15000);
+  clr();
+  refreshAll();
 }
 // =======================================================================
 #define MAX_DIGITS 16
