@@ -568,7 +568,7 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
             </label>
           </div>
           
-          <input type='hidden' name='save' value='1'>
+          <input type='hidden' name='save_display' value='1'>
           <input type='submit' value='Save Settings' style='margin-top: 10px;'>
         </form>
       </div>
@@ -625,7 +625,7 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
             </div>
           </div>
 
-          <input type='hidden' name='save' value='1'>
+          <input type='hidden' name='save_advanced' value='1'>
           <input type='submit' value='Save Adjustments' style='margin-top: 25px;'>
         </form>
       </div>
@@ -733,39 +733,40 @@ void handleRoot() {
 }
 
 void handleUpdate() {
-  if (!server.hasArg("save")) {
-    server.sendHeader("Location", "/");
-    server.send(303);
-    return;
+  if (server.hasArg("save_display")) {
+    displayPower = server.hasArg("power");
+    show12HourClock = server.hasArg("12h");
+    show24HourClock = server.hasArg("24h");
+    showDate = server.hasArg("date");
+    showWeather = server.hasArg("weather");
+    showHoliday = server.hasArg("holiday");
+    
+    EEPROM.put(ADDR_DISPLAY_POWER, displayPower);
+    EEPROM.put(ADDR_SHOW_12H, show12HourClock);
+    EEPROM.put(ADDR_SHOW_24H, show24HourClock);
+    EEPROM.put(ADDR_SHOW_DATE, showDate);
+    EEPROM.put(ADDR_SHOW_WEATHER, showWeather);
+    EEPROM.put(ADDR_SHOW_HOLIDAY, showHoliday);
+    EEPROM.commit();
+    
+    updCnt = 0; // Force data fetch immediately after settings are updated
+  } 
+  else if (server.hasArg("save_advanced")) {
+    showCustomText = server.hasArg("show_custom");
+    if (server.hasArg("custom_text")) {
+      customText = server.arg("custom_text");
+    }
+    autoBrightness = server.hasArg("auto_bright");
+    if (server.hasArg("brightness")) {
+      manualBrightness = server.arg("brightness").toInt();
+    }
+    
+    EEPROM.put(ADDR_AUTO_BRIGHT, autoBrightness);
+    EEPROM.put(ADDR_MANUAL_BRIGHT, manualBrightness);
+    EEPROM.commit();
+    
+    updCnt = 0; // Force data fetch immediately after settings are updated
   }
-
-  displayPower = server.hasArg("power");
-  show12HourClock = server.hasArg("12h");
-  show24HourClock = server.hasArg("24h");
-  showDate = server.hasArg("date");
-  showWeather = server.hasArg("weather");
-  showHoliday = server.hasArg("holiday");
-  showCustomText = server.hasArg("show_custom");
-  if (server.hasArg("custom_text")) {
-    customText = server.arg("custom_text");
-  }
-  autoBrightness = server.hasArg("auto_bright");
-  if (server.hasArg("brightness")) {
-    manualBrightness = server.arg("brightness").toInt();
-  }
-  
-  EEPROM.put(ADDR_DISPLAY_POWER, displayPower);
-  EEPROM.put(ADDR_SHOW_12H, show12HourClock);
-  EEPROM.put(ADDR_SHOW_24H, show24HourClock);
-  EEPROM.put(ADDR_SHOW_DATE, showDate);
-  EEPROM.put(ADDR_SHOW_WEATHER, showWeather);
-  EEPROM.put(ADDR_SHOW_HOLIDAY, showHoliday);
-  EEPROM.put(ADDR_AUTO_BRIGHT, autoBrightness);
-  EEPROM.put(ADDR_MANUAL_BRIGHT, manualBrightness);
-  EEPROM.commit();
-
-  updCnt = 0; // Force data fetch immediately after settings are updated
-
 
   server.sendHeader("Location", "/");
   server.send(303);
