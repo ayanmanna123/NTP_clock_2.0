@@ -43,6 +43,12 @@ bool showCustomText = false;
 String customText = "";
 bool displayPower = true;
 
+// Stopwatch State
+bool showStopwatch = false;
+bool stopwatchActive = false;
+unsigned long stopwatchStartMillis = 0;
+unsigned long stopwatchElapsedMillis = 0;
+
 String date;
 // String temp = " Temp: --C";           // Default value before fetching data
 // String weatherCondition = "Unknown";  // Stores weather condition (e.g.,
@@ -198,7 +204,7 @@ float tempFloat1 = 0.0;
 #define NIGHT_END 9    // 9 AM
 
 // Deep Night Mode (Display completely OFF)
-#define DEEP_NIGHT_START 2 // 1 AM
+#define DEEP_NIGHT_START 3 // 1 AM
 #define DEEP_NIGHT_END 7   // 9 AM
 
 // =======================================================================
@@ -217,49 +223,510 @@ void smartDelay(unsigned long ms) {
   }
 }
 
+const char ROOT_HTML[] PROGMEM = R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <title>NTP Matrix Clock Control</title>
+  <link href='https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap' rel='stylesheet'>
+  <style>
+    :root {
+      --bg-color: #08090c;
+      --card-bg: rgba(20, 22, 33, 0.7);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text-main: #f3f4f6;
+      --text-sub: #9ca3af;
+      --accent-cyan: #00f2fe;
+      --accent-blue: #4facfe;
+      --accent-glow: rgba(0, 242, 254, 0.3);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Outfit', sans-serif;
+      background-color: var(--bg-color);
+      background-image: radial-gradient(circle at 10% 20%, rgba(30, 20, 50, 0.2) 0%, transparent 40%),
+                        radial-gradient(circle at 90% 80%, rgba(20, 40, 60, 0.2) 0%, transparent 40%);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 30px 15px;
+    }
+    .container {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      flex-direction: column;
+      gap: 25px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 15px;
+    }
+    h1 {
+      font-size: 2.2rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      margin-bottom: 5px;
+      text-shadow: 0 0 30px rgba(0, 242, 254, 0.2);
+    }
+    .uptime {
+      font-size: 0.95rem;
+      color: var(--text-sub);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 5px 12px;
+      border-radius: 20px;
+      display: inline-block;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 25px;
+    }
+    @media (max-width: 768px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 25px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      transition: all 0.3s ease;
+      display: flex;
+      flex-direction: column;
+    }
+    .card:hover {
+      border-color: rgba(0, 242, 254, 0.2);
+      box-shadow: 0 10px 35px rgba(0, 242, 254, 0.05);
+    }
+    .card.full-width {
+      grid-column: 1 / -1;
+    }
+    h2 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 12px;
+    }
+    h2::before {
+      content: '';
+      display: inline-block;
+      width: 4px;
+      height: 18px;
+      background: linear-gradient(#00f2fe, #4facfe);
+      border-radius: 2px;
+    }
+    .form-group {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .form-group label {
+      font-size: 1.05rem;
+      color: var(--text-main);
+      cursor: pointer;
+      flex: 1;
+      padding-right: 15px;
+    }
+    
+    .switch-container {
+      position: relative;
+      display: inline-block;
+      width: 50px;
+      height: 26px;
+    }
+    .switch-container input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: rgba(255, 255, 255, 0.1);
+      transition: .4s;
+      border-radius: 34px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px; width: 18px;
+      left: 3px; bottom: 3px;
+      background-color: #fff;
+      transition: .4s;
+      border-radius: 50%;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    }
+    input:checked + .slider {
+      background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+      border: none;
+    }
+    input:checked + .slider:before {
+      transform: translateX(24px);
+    }
+    
+    .range-container {
+      margin-top: 15px;
+    }
+    .range-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.95rem;
+      color: var(--text-sub);
+      margin-bottom: 8px;
+    }
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%;
+      background: rgba(255, 255, 255, 0.1);
+      height: 6px;
+      border-radius: 3px;
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      background: #00f2fe;
+      cursor: pointer;
+      box-shadow: 0 0 10px #00f2fe;
+      transition: transform 0.1s;
+    }
+    input[type=range]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+    input[type=range]:disabled {
+      opacity: 0.3;
+    }
+    input[type=range]:disabled::-webkit-slider-thumb {
+      background: #888;
+      box-shadow: none;
+      cursor: not-allowed;
+    }
+
+    input[type=text] {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(0, 0, 0, 0.2);
+      color: #fff;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+      margin-top: 8px;
+    }
+    input[type=text]:focus {
+      border-color: #00f2fe;
+    }
+
+    input[type=submit], button.btn {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      border: none;
+      color: white;
+      font-weight: 600;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+      box-shadow: 0 4px 15px rgba(0, 242, 254, 0.2);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    input[type=submit]:hover, button.btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(0, 242, 254, 0.3);
+    }
+    input[type=submit]:active, button.btn:active {
+      transform: translateY(0);
+    }
+
+    .stopwatch-display {
+      font-size: 3rem;
+      font-weight: 800;
+      font-family: monospace;
+      text-align: center;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 15px;
+      border-radius: 15px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      color: #00f2fe;
+      text-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
+      margin-bottom: 20px;
+      letter-spacing: 2px;
+    }
+    .stopwatch-controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .sw-btn {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 10px;
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .sw-btn-start {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+    }
+    .sw-btn-pause {
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2);
+    }
+    .sw-btn-reset {
+      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+      box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+    }
+    .sw-btn:hover {
+      transform: translateY(-2px);
+      filter: brightness(1.1);
+    }
+    .sw-btn:active {
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class='container'>
+    <header>
+      <h1>Matrix Clock Console</h1>
+      <div class='uptime'>Uptime: %UPTIME%</div>
+    </header>
+
+    <div class='grid'>
+      <div class='card'>
+        <h2>Display Settings</h2>
+        <form action='/update' method='GET'>
+          <div class='form-group'>
+            <label for='power'>System Display Power</label>
+            <label class='switch-container'>
+              <input type='checkbox' id='power' name='power' value='1' %POWER_CHECKED%>
+              <span class='slider'></span>
+            </label>
+          </div>
+          
+          <div style='height: 1px; background: rgba(255,255,255,0.08); margin: 15px 0;'></div>
+
+          <div class='form-group'>
+            <label for='c12h'>12-Hour Clock Mode</label>
+            <label class='switch-container'>
+              <input type='checkbox' id='c12h' name='12h' value='1' %C12H_CHECKED%>
+              <span class='slider'></span>
+            </label>
+          </div>
+          
+          <div class='form-group'>
+            <label for='c24h'>24-Hour Clock Mode</label>
+            <label class='switch-container'>
+              <input type='checkbox' id='c24h' name='24h' value='1' %C24H_CHECKED%>
+              <span class='slider'></span>
+            </label>
+          </div>
+
+          <div class='form-group'>
+            <label for='show_date'>Show Calendar Date</label>
+            <label class='switch-container'>
+              <input type='checkbox' id='show_date' name='date' value='1' %DATE_CHECKED%>
+              <span class='slider'></span>
+            </label>
+          </div>
+
+          <div class='form-group'>
+            <label for='show_weather'>Show Weather Details</label>
+            <label class='switch-container'>
+              <input type='checkbox' id='show_weather' name='weather' value='1' %WEATHER_CHECKED%>
+              <span class='slider'></span>
+            </label>
+          </div>
+
+          <div class='form-group'>
+            <label for='show_holiday'>Show Holiday/Birthdays</label>
+            <label class='switch-container'>
+              <input type='checkbox' id='show_holiday' name='holiday' value='1' %HOLIDAY_CHECKED%>
+              <span class='slider'></span>
+            </label>
+          </div>
+          
+          <input type='hidden' name='save' value='1'>
+          <input type='submit' value='Save Settings' style='margin-top: 10px;'>
+        </form>
+      </div>
+
+      <div class='card'>
+        <h2>Stopwatch</h2>
+        <div class='stopwatch-display' id='sw-time'>00:00.00</div>
+        
+        <div class='stopwatch-controls'>
+          <button class='sw-btn sw-btn-start' onclick='controlSW("start")'>Start</button>
+          <button class='sw-btn sw-btn-pause' onclick='controlSW("stop")'>Pause</button>
+          <button class='sw-btn sw-btn-reset' onclick='controlSW("reset")'>Reset</button>
+        </div>
+
+        <div class='form-group'>
+          <label for='sw-show-toggle'>Show Stopwatch on Matrix</label>
+          <label class='switch-container'>
+            <input type='checkbox' id='sw-show-toggle' onchange='toggleSWDisplay(this.checked)' %SW_SHOW_CHECKED%>
+            <span class='slider'></span>
+          </label>
+        </div>
+      </div>
+
+      <div class='card full-width'>
+        <h2>Advanced Configuration</h2>
+        <form action='/update' method='GET'>
+          <div class='form-group' style='flex-direction: column; align-items: flex-start; gap: 5px; margin-bottom: 25px;'>
+            <div style='display: flex; align-items: center; justify-content: space-between; width: 100%;'>
+              <span style='font-size: 1.05rem;'>Display Custom Banner Text</span>
+              <label class='switch-container'>
+                <input type='checkbox' id='show_custom' name='show_custom' value='1' %CUSTOM_CHECKED%>
+                <span class='slider'></span>
+              </label>
+            </div>
+            <input type='text' name='custom_text' value='%CUSTOM_TEXT%' placeholder='Enter marquee text...'>
+          </div>
+
+          <div style='height: 1px; background: rgba(255,255,255,0.08); margin: 15px 0 20px 0;'></div>
+
+          <div class='form-group' style='flex-direction: column; align-items: flex-start; gap: 5px;'>
+            <div style='display: flex; align-items: center; justify-content: space-between; width: 100%;'>
+              <span style='font-size: 1.05rem;'>Auto Brightness Level</span>
+              <label class='switch-container'>
+                <input type='checkbox' id='auto_bright' name='auto_bright' value='1' onchange='document.getElementById("mb_slider").disabled = this.checked;' %AUTO_BRIGHT_CHECKED%>
+                <span class='slider'></span>
+              </label>
+            </div>
+            <div class='range-container' style='width: 100%;'>
+              <div class='range-label'>
+                <span>Manual Intensity</span>
+                <span id='brightness-val'>%BRIGHTNESS_VAL%</span>
+              </div>
+              <input type='range' id='mb_slider' name='brightness' min='0' max='15' value='%BRIGHTNESS_VAL%' oninput='document.getElementById("brightness-val").innerText=this.value;' %BRIGHTNESS_DISABLED%>
+            </div>
+          </div>
+
+          <input type='hidden' name='save' value='1'>
+          <input type='submit' value='Save Adjustments' style='margin-top: 25px;'>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let swActive = false;
+    let swElapsed = 0;
+    let lastSyncTime = 0;
+    let swInterval = null;
+
+    function formatTime(ms) {
+      const isHours = ms >= 3600000;
+      if (isHours) {
+        const hours = Math.floor(ms / 3600000);
+        const mins = Math.floor((ms % 3600000) / 60000);
+        const secs = Math.floor((ms % 60000) / 1000);
+        return String(hours).padStart(2, '0') + ':' + 
+               String(mins).padStart(2, '0') + ':' + 
+               String(secs).padStart(2, '0');
+      } else {
+        const mins = Math.floor(ms / 60000);
+        const secs = Math.floor((ms % 60000) / 1000);
+        const cs = Math.floor((ms % 1000) / 10);
+        return String(mins).padStart(2, '0') + ':' + 
+               String(secs).padStart(2, '0') + '.' + 
+               String(cs).padStart(2, '0');
+      }
+    }
+
+    function updateLocalDisplay() {
+      let currentElapsed = swElapsed;
+      if (swActive) {
+        currentElapsed += (Date.now() - lastSyncTime);
+      }
+      document.getElementById('sw-time').innerText = formatTime(currentElapsed);
+    }
+
+    function syncStatus() {
+      fetch('/stopwatch/status')
+        .then(response => response.json())
+        .then(data => {
+          swActive = data.active;
+          swElapsed = data.elapsed;
+          lastSyncTime = Date.now();
+          document.getElementById('sw-show-toggle').checked = data.show;
+          updateLocalDisplay();
+          
+          if (swActive && !swInterval) {
+            swInterval = setInterval(updateLocalDisplay, 10);
+          } else if (!swActive && swInterval) {
+            clearInterval(swInterval);
+            swInterval = null;
+          }
+        });
+    }
+
+    function controlSW(action) {
+      fetch('/stopwatch?action=' + action)
+        .then(() => {
+          setTimeout(syncStatus, 50);
+        });
+    }
+
+    function toggleSWDisplay(show) {
+      fetch('/stopwatch?action=toggle_show&show=' + (show ? '1' : '0'))
+        .then(() => {
+          setTimeout(syncStatus, 50);
+        });
+    }
+
+    syncStatus();
+    setInterval(syncStatus, 2000);
+  </script>
+</body>
+</html>
+)rawhtml";
+
 void handleRoot() {
-  String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<style>body{font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background-color: #121212; color: #ffffff;}";
-  html += "form{display: inline-block; text-align: left; padding: 25px; border: 1px solid #333; border-radius: 12px; background-color: #1e1e1e;}";
-  html += "input[type=checkbox]{margin-right: 10px; transform: scale(1.5);}";
-  html += "label{font-size: 18px; margin-bottom: 10px; display: block;}";
-  html += "input[type=submit]{margin-top: 20px; padding: 12px 24px; font-size: 16px; background-color: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;}</style></head><body>";
-  html += "<h2>NTP Clock Settings</h2>";
-  
   unsigned long uptimeMillis = millis();
   unsigned long days = uptimeMillis / 86400000;
   unsigned long hours = (uptimeMillis / 3600000) % 24;
   unsigned long mins = (uptimeMillis / 60000) % 60;
   unsigned long secs = (uptimeMillis / 1000) % 60;
   String uptimeStr = String(days) + "d " + String(hours) + "h " + String(mins) + "m " + String(secs) + "s";
-  html += "<p style='color: #bbb; font-size: 16px; margin-top: -10px; margin-bottom: 20px;'>Uptime: " + uptimeStr + "</p>";
 
-  html += "<form action='/update' method='GET'>";
+  String html = FPSTR(ROOT_HTML);
   
-  html += "<div style='margin-bottom: 20px; font-weight: bold;'>";
-  html += "<label><input type='checkbox' name='power' value='1' " + String(displayPower ? "checked" : "") + "> Display ON/OFF</label>";
-  html += "</div>";
-  html += "<hr style='border:1px solid #444; margin: 20px 0;'>";
+  html.replace("%UPTIME%", uptimeStr);
+  html.replace("%POWER_CHECKED%", displayPower ? "checked" : "");
+  html.replace("%C12H_CHECKED%", show12HourClock ? "checked" : "");
+  html.replace("%C24H_CHECKED%", show24HourClock ? "checked" : "");
+  html.replace("%DATE_CHECKED%", showDate ? "checked" : "");
+  html.replace("%WEATHER_CHECKED%", showWeather ? "checked" : "");
+  html.replace("%HOLIDAY_CHECKED%", showHoliday ? "checked" : "");
+  html.replace("%SW_SHOW_CHECKED%", showStopwatch ? "checked" : "");
+  html.replace("%CUSTOM_CHECKED%", showCustomText ? "checked" : "");
+  html.replace("%CUSTOM_TEXT%", customText);
+  html.replace("%AUTO_BRIGHT_CHECKED%", autoBrightness ? "checked" : "");
+  html.replace("%BRIGHTNESS_VAL%", String(manualBrightness));
+  html.replace("%BRIGHTNESS_DISABLED%", autoBrightness ? "disabled" : "");
 
-  html += "<label><input type='checkbox' name='12h' value='1' " + String(show12HourClock ? "checked" : "") + "> Show 12-Hour Clock</label>";
-  html += "<label><input type='checkbox' name='24h' value='1' " + String(show24HourClock ? "checked" : "") + "> Show 24-Hour Clock</label>";
-  html += "<label><input type='checkbox' name='date' value='1' " + String(showDate ? "checked" : "") + "> Show Date</label>";
-  html += "<label><input type='checkbox' name='weather' value='1' " + String(showWeather ? "checked" : "") + "> Show Weather Details</label>";
-  html += "<label><input type='checkbox' name='holiday' value='1' " + String(showHoliday ? "checked" : "") + "> Show Holiday Details</label>";
-  
-  html += "<hr style='border:1px solid #444; margin: 20px 0;'>";
-  html += "<label><input type='checkbox' name='show_custom' value='1' " + String(showCustomText ? "checked" : "") + "> Show Custom Text</label>";
-  html += "<input type='text' name='custom_text' value='" + customText + "' style='width: 100%; max-width: 300px; padding: 10px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #555; background: #222; color: #fff;' placeholder='Enter text to display...'><br>";
-
-  html += "<hr style='border:1px solid #444; margin: 20px 0;'>";
-  html += "<label><input type='checkbox' name='auto_bright' value='1' onchange='document.getElementById(\"mb_slider\").disabled = this.checked;' " + String(autoBrightness ? "checked" : "") + "> Auto Brightness</label>";
-  html += "<label style='margin-bottom:0;'>Manual Level (0-15): </label>";
-  html += "<input type='range' id='mb_slider' name='brightness' min='0' max='15' value='" + String(manualBrightness) + "' style='width: 100%; max-width: 300px; padding: 10px 0;' " + String(autoBrightness ? "disabled" : "") + "><br>";
-
-  html += "<input type='hidden' name='save' value='1'>";
-  html += "<input type='submit' value='Update Settings'>";
-  html += "</form></body></html>";
-  
   server.send(200, "text/html", html);
 }
 
@@ -300,6 +767,47 @@ void handleUpdate() {
 
   server.sendHeader("Location", "/");
   server.send(303);
+}
+
+void handleStopwatch() {
+  if (server.hasArg("action")) {
+    String action = server.arg("action");
+    if (action == "start") {
+      if (!stopwatchActive) {
+        stopwatchActive = true;
+        stopwatchStartMillis = millis() - stopwatchElapsedMillis;
+      }
+    } else if (action == "stop") {
+      if (stopwatchActive) {
+        stopwatchActive = false;
+        stopwatchElapsedMillis = millis() - stopwatchStartMillis;
+      }
+    } else if (action == "reset") {
+      stopwatchActive = false;
+      stopwatchElapsedMillis = 0;
+    } else if (action == "toggle_show") {
+      if (server.hasArg("show")) {
+        showStopwatch = (server.arg("show") == "1");
+      }
+    }
+  }
+  server.send(200, "text/plain", "OK");
+}
+
+void handleStopwatchStatus() {
+  unsigned long elapsed = stopwatchElapsedMillis;
+  if (stopwatchActive) {
+    elapsed = millis() - stopwatchStartMillis;
+  }
+  
+  String json = "{";
+  json += "\"active\":" + String(stopwatchActive ? "true" : "false") + ",";
+  json += "\"elapsed\":" + String(elapsed) + ",";
+  json += "\"show\":" + String(showStopwatch ? "true" : "false");
+  json += "}";
+  
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", json);
 }
 
 void setup() {
@@ -375,6 +883,8 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/update", handleUpdate);
+  server.on("/stopwatch", handleStopwatch);
+  server.on("/stopwatch/status", handleStopwatchStatus);
   server.begin();
   Serial.println("HTTP server started");
 }
@@ -393,6 +903,18 @@ int h, m, s;
 // =======================================================================
 void loop() {
   server.handleClient();
+
+  if (showStopwatch) {
+    if (displayPower) {
+      showStopwatchTime();
+    } else {
+      clr();
+      refreshAll();
+    }
+    updateBrightness();
+    smartDelay(50); // Refresh at ~20Hz to keep centiseconds looking fluid
+    return;
+  }
 
   if (updCnt <= 0) { 
     // If only clock (or clock+date) is selected, make the interval roughly 1 hour (90 cycles of 40-45s)
@@ -522,6 +1044,48 @@ void loop() {
     refreshAll();
     smartDelay(100);      // Throttle SPI when display is powered down
   }
+}
+
+// =======================================================================
+
+void showStopwatchTime() {
+  unsigned long elapsed = stopwatchElapsedMillis;
+  if (stopwatchActive) {
+    elapsed += millis() - stopwatchStartMillis;
+  }
+
+  unsigned long hours = (elapsed / 3600000) % 100;
+  unsigned long minutes = (elapsed / 60000) % 60;
+  unsigned long seconds = (elapsed / 1000) % 60;
+  unsigned long centiseconds = (elapsed / 10) % 100;
+
+  int d1 = hours / 10;
+  int d2 = hours % 10;
+  int d3 = minutes / 10;
+  int d4 = minutes % 10;
+  int d5 = seconds / 10;
+  int d6 = seconds % 10;
+  int d7 = centiseconds / 10;
+  int d8 = centiseconds % 10;
+
+  clr();
+  
+  // Draw all 8 digits using the 5x8 rounded font (dig5x8rn)
+  showDigit(d1, 5, dig5x8rn);
+  showDigit(d2, 11, dig5x8rn);
+  showDigit(d3, 19, dig5x8rn);
+  showDigit(d4, 25, dig5x8rn);
+  showDigit(d5, 33, dig5x8rn);
+  showDigit(d6, 39, dig5x8rn);
+  showDigit(d7, 47, dig5x8rn);
+  showDigit(d8, 53, dig5x8rn);
+
+  // Separators
+  setCol(17, B00100100); // Colon between Hours and Minutes
+  setCol(31, B00100100); // Colon between Minutes and Seconds
+  setCol(45, B01000000); // Decimal point between Seconds and Centiseconds
+
+  refreshAll();
 }
 
 // =======================================================================
