@@ -205,7 +205,7 @@ float tempFloat1 = 0.0;
 #define NIGHT_END 9    // 9 AM
 
 // Deep Night Mode (Display completely OFF)
-#define DEEP_NIGHT_START 3 // 1 AM
+#define DEEP_NIGHT_START 4 // 1 AM
 #define DEEP_NIGHT_END 7   // 9 AM
 
 // =======================================================================
@@ -336,7 +336,7 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
       justify-content: space-between;
       margin-bottom: 18px;
     }
-    .form-group label {
+    .form-group label:not(.switch-container) {
       font-size: 1.05rem;
       color: var(--text-main);
       cursor: pointer;
@@ -349,6 +349,7 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
       display: inline-block;
       width: 50px;
       height: 26px;
+      flex: none;
     }
     .switch-container input { opacity: 0; width: 0; height: 0; position: absolute; }
     .slider {
