@@ -205,7 +205,7 @@ float tempFloat1 = 0.0;
 #define NIGHT_END 9    // 9 AM
 
 // Deep Night Mode (Display completely OFF)
-#define DEEP_NIGHT_START 4 // 1 AM
+#define DEEP_NIGHT_START 2 // 1 AM
 #define DEEP_NIGHT_END 7   // 9 AM
 
 // =======================================================================
@@ -796,6 +796,7 @@ void handleStopwatch() {
   }
   server.send(200, "text/plain", "OK");
 }
+
 
 void handleStopwatchStatus() {
   unsigned long elapsed = stopwatchElapsedMillis;
