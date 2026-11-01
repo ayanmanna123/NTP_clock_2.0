@@ -105,6 +105,11 @@ void clr()
   for (int i = 0; i < NUM_MAX*8; i++) scr[i] = 0;
 }
 
+void fillAll()
+{
+  for (int i = 0; i < NUM_MAX*8; i++) scr[i] = 0xFF;
+}
+
 void scrollLeft()
 {
   for(int i=0; i < NUM_MAX*8+7; i++) scr[i] = scr[i+1];

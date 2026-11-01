@@ -29,6 +29,11 @@ bool showCustomText = false;
 String customText = "";
 bool displayPower = true;
 
+// Flashlight / Lamp State (Completely separate from clock brightness)
+bool lampActive = false;
+int lampBrightness = 15; // Independent brightness for Flashlight / Lamp only
+int lastDisplayIntensity = -1; // Tracks regular clock display intensity
+
 // Deep Sleep State & Config
 bool enableDeepSleep = false;
 int deepSleepStart = 2; // 2 AM default
@@ -109,6 +114,7 @@ bool hasDateData() {
 #define ADDR_DEEP_SLEEP_EN 95
 #define ADDR_DEEP_SLEEP_ST 96
 #define ADDR_DEEP_SLEEP_END 97
+#define ADDR_LAMP_BRIGHT 98
 
 void writeEEPROMString(int addr, const String &str, int maxLen) {
   int len = str.length();
@@ -264,6 +270,7 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset='UTF-8'>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
   <title>NTP Matrix Clock Control</title>
   <link href='https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap' rel='stylesheet'>
@@ -541,6 +548,52 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
     .sw-btn:active {
       transform: translateY(0);
     }
+    .lamp-btn {
+      width: 140px;
+      height: 140px;
+      border-radius: 50%;
+      border: 3px solid rgba(255, 255, 255, 0.15);
+      background: radial-gradient(circle, rgba(255,255,255,0.08) 0%, rgba(0,0,0,0.3) 100%);
+      color: #94a3b8;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+    }
+    .lamp-btn:hover {
+      transform: scale(1.05);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+    .lamp-btn.active {
+      background: radial-gradient(circle, #fef08a 0%, #eab308 60%, #ca8a04 100%);
+      color: #713f12;
+      border-color: #fde047;
+      box-shadow: 0 0 40px rgba(250, 204, 21, 0.6), 0 0 70px rgba(234, 179, 8, 0.3);
+      animation: lampPulse 2.5s infinite alternate ease-in-out;
+    }
+    @keyframes lampPulse {
+      0% { box-shadow: 0 0 30px rgba(250, 204, 21, 0.5), 0 0 50px rgba(234, 179, 8, 0.2); }
+      100% { box-shadow: 0 0 55px rgba(250, 204, 21, 0.8), 0 0 90px rgba(234, 179, 8, 0.4); }
+    }
+    .quick-btn {
+      padding: 9px 12px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      color: var(--text-main);
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .quick-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: #00f2fe;
+      transform: translateY(-1px);
+    }
   </style>
 </head>
 <body>
@@ -625,6 +678,32 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
             <input type='checkbox' id='sw-show-toggle' onchange='toggleSWDisplay(this.checked)' %SW_SHOW_CHECKED%>
             <span class='slider'></span>
           </label>
+        </div>
+      </div>
+
+      <div class='card'>
+        <h2>Flashlight / Lamp</h2>
+        <div style='display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px 0 16px 0;'>
+          <button type='button' id='lamp-power-btn' class='lamp-btn %LAMP_BTN_CLASS%' onclick='toggleLamp()'>
+            <span id='lamp-status' style='font-size: 1.4rem; font-weight: 800; letter-spacing: 1px; display: block;'>%LAMP_STATUS%</span>
+            <span id='lamp-btn-text' style='font-weight: 600; font-size: 0.95rem; margin-top: 5px; display: block;'>%LAMP_BTN_TEXT%</span>
+          </button>
+        </div>
+
+        <div class='form-group' style='flex-direction: column; align-items: flex-start; gap: 8px;'>
+          <div class='range-container' style='width: 100%;'>
+            <div class='range-label'>
+              <span>Flashlight / Lamp Brightness</span>
+              <span id='lamp-brightness-val'>%LAMP_BRIGHTNESS%</span>
+            </div>
+            <input type='range' id='lamp-slider' min='0' max='15' value='%LAMP_BRIGHTNESS%' oninput='setLampBrightness(this.value)'>
+          </div>
+        </div>
+
+        <div style='display: flex; gap: 8px; margin-top: 10px;'>
+          <button type='button' class='quick-btn' style='flex: 1;' onclick='setLampBrightness(1)'>Soft (1)</button>
+          <button type='button' class='quick-btn' style='flex: 1;' onclick='setLampBrightness(7)'>Warm (7)</button>
+          <button type='button' class='quick-btn' style='flex: 1;' onclick='setLampBrightness(15)'>Max (15)</button>
         </div>
       </div>
 
@@ -755,6 +834,11 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
             clearInterval(swInterval);
             swInterval = null;
           }
+
+          fetch('/lamp/status')
+            .then(r => r.json())
+            .then(lampData => updateLampUI(lampData))
+            .catch(() => {});
         });
     }
 
@@ -785,6 +869,41 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
       }
     }
 
+    function toggleLamp() {
+      fetch('/lamp?toggle=1')
+        .then(r => r.json())
+        .then(data => updateLampUI(data));
+    }
+
+    function setLampBrightness(val) {
+      val = parseInt(val);
+      document.getElementById('lamp-brightness-val').innerText = val;
+      document.getElementById('lamp-slider').value = val;
+      fetch('/lamp?brightness=' + val)
+        .then(r => r.json())
+        .then(data => updateLampUI(data));
+    }
+
+    function updateLampUI(data) {
+      const btn = document.getElementById('lamp-power-btn');
+      const txt = document.getElementById('lamp-btn-text');
+      const status = document.getElementById('lamp-status');
+      const slider = document.getElementById('lamp-slider');
+      const valText = document.getElementById('lamp-brightness-val');
+      if (!btn) return;
+      if (data.active) {
+        btn.classList.add('active');
+        txt.innerText = 'Turn Lamp OFF';
+        if (status) status.innerText = 'ON';
+      } else {
+        btn.classList.remove('active');
+        txt.innerText = 'Turn Lamp ON';
+        if (status) status.innerText = 'OFF';
+      }
+      slider.value = data.brightness;
+      valText.innerText = data.brightness;
+    }
+
     syncStatus();
     setInterval(syncStatus, 2000);
   </script>
@@ -794,6 +913,7 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
 
 void enterDeepSleep(unsigned long sleepSeconds); // forward declaration
 void checkNightDeepSleep(); // forward declaration
+void updateBrightness(); // forward declaration
 void getTime(); // forward declaration
 void getTemperature(); // forward declaration
 void getAQI(); // forward declaration
@@ -827,8 +947,12 @@ void handleRoot() {
   html.replace("%DEEP_SLEEP_CHECKED%", enableDeepSleep ? "checked" : "");
   html.replace("%DS_START%", String(deepSleepStart));
   html.replace("%DS_END%", String(deepSleepEnd));
+  html.replace("%LAMP_BTN_CLASS%", lampActive ? "active" : "");
+  html.replace("%LAMP_BTN_TEXT%", lampActive ? "Turn Lamp OFF" : "Turn Lamp ON");
+  html.replace("%LAMP_STATUS%", lampActive ? "ON" : "OFF");
+  html.replace("%LAMP_BRIGHTNESS%", String(lampBrightness));
 
-  server.send(200, "text/html", html);
+  server.send(200, "text/html; charset=UTF-8", html);
 }
 
 void handleUpdate() {
@@ -964,6 +1088,49 @@ void handleStopwatchStatus() {
   server.send(200, "application/json", json);
 }
 
+void handleLamp() {
+  bool changed = false;
+  if (server.hasArg("toggle")) {
+    lampActive = !lampActive;
+    changed = true;
+  } else if (server.hasArg("active")) {
+    lampActive = (server.arg("active") == "1" || server.arg("active") == "true");
+    changed = true;
+  }
+
+  if (server.hasArg("brightness")) {
+    int b = server.arg("brightness").toInt();
+    if (b < 0) b = 0;
+    if (b > 15) b = 15;
+    lampBrightness = b;
+    EEPROM.put(ADDR_LAMP_BRIGHT, lampBrightness);
+    EEPROM.commit();
+    changed = true;
+  }
+
+  if (changed) {
+    if (lampActive) {
+      fillAll();
+      refreshAll();
+      sendCmdAll(CMD_SHUTDOWN, 1);
+      sendCmdAll(CMD_INTENSITY, lampBrightness);
+    } else {
+      clr();
+      refreshAll();
+      lastDisplayIntensity = -1; // Force immediate reapplication of the clock's configured brightness
+      updateBrightness();
+    }
+  }
+
+  String json = "{";
+  json += "\"active\":" + String(lampActive ? "true" : "false") + ",";
+  json += "\"brightness\":" + String(lampBrightness);
+  json += "}";
+
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", json);
+}
+
 void handleManualSleep() {
   unsigned long sleepSec = 3600; // Default 1 hour
   if (server.hasArg("seconds")) {
@@ -1053,6 +1220,8 @@ void setup() {
     EEPROM.get(ADDR_DEEP_SLEEP_EN, enableDeepSleep);
     EEPROM.get(ADDR_DEEP_SLEEP_ST, deepSleepStart);
     EEPROM.get(ADDR_DEEP_SLEEP_END, deepSleepEnd);
+    EEPROM.get(ADDR_LAMP_BRIGHT, lampBrightness);
+    if (lampBrightness < 0 || lampBrightness > 15) lampBrightness = 15;
 
     // Validate float and integer bounds from EEPROM to prevent NaN/garbage
     if (isnan(minTemp) || minTemp < -50.0 || minTemp > 70.0) minTemp = 100.0;
@@ -1137,6 +1306,8 @@ void setup() {
   server.on("/stopwatch", handleStopwatch);
   server.on("/stopwatch/status", handleStopwatchStatus);
   server.on("/sleep", handleManualSleep);
+  server.on("/lamp", handleLamp);
+  server.on("/lamp/status", handleLamp);
   server.begin();
   Serial.println("HTTP server started");
 
@@ -1171,6 +1342,15 @@ void loop() {
       Serial.println("WiFi disconnected, reconnecting...");
       WiFi.reconnect();
     }
+  }
+
+  if (lampActive) {
+    fillAll();
+    refreshAll();
+    sendCmdAll(CMD_SHUTDOWN, 1);
+    sendCmdAll(CMD_INTENSITY, lampBrightness);
+    smartDelay(50);
+    return;
   }
 
   if (showStopwatch) {
@@ -1843,12 +2023,14 @@ bool updateTemperature(float newTemp) {
 }
 
 void updateBrightness() {
+  if (lampActive)
+    return; // Flashlight/Lamp is active with its own separate brightness; do not touch
+
   if (!timeSynced && localEpoc == 0)
     return; // Wait until time is synced
 
   int hour24 = getHour24();
 
-  static int lastIntensity = -1;
   static bool lastPowerState = true; // true = ON, false = OFF
 
   int currentIntensity = DAY_INTENSITY;
@@ -1877,10 +2059,10 @@ void updateBrightness() {
   }
 
   // Handle Intensity (only if display is ON)
-  if (currentPowerState && (currentIntensity != lastIntensity)) {
+  if (currentPowerState && (currentIntensity != lastDisplayIntensity)) {
     sendCmdAll(CMD_INTENSITY, currentIntensity);
-    lastIntensity = currentIntensity;
-    Serial.print("Brightness updated to: ");
+    lastDisplayIntensity = currentIntensity;
+    Serial.print("Clock brightness updated to: ");
     Serial.println(currentIntensity);
   }
 }
@@ -1914,7 +2096,7 @@ void enterDeepSleep(unsigned long sleepSeconds) {
 }
 
 void checkNightDeepSleep() {
-  if (!enableDeepSleep || !timeSynced || !displayPower || showStopwatch) {
+  if (!enableDeepSleep || !timeSynced || !displayPower || showStopwatch || lampActive) {
     return;
   }
 
