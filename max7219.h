@@ -108,6 +108,7 @@ void clr()
 void scrollLeft()
 {
   for(int i=0; i < NUM_MAX*8+7; i++) scr[i] = scr[i+1];
+  scr[NUM_MAX*8+7] = 0;
 }
 
 void invert()

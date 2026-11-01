@@ -1,52 +1,22 @@
-// ESP-01 pinout from top:
-
-// GND    GP2 GP0 RX/GP3
-// TX/GP1 CH  RST VCC
-
-// MAX7219
-// ESP-1 from rear
-// Re Br Or Ye
-// Gr -- -- --
-
-// USB to Serial programming
-// ESP-1 from rear, FF to GND, RR to GND before upload
-// Gr FF -- Bl
-// Wh -- RR Vi
-
-// GPIO 2 - DataIn
-// GPIO 1 - LOAD/CS
-// GPIO 0 - CLK
-
-// ------------------------
-// NodeMCU 1.0 pinout:
-
-// D8 - DataIn
-// D7 - LOAD/CS
-// D6 - CLK
+// ESP32 pinout for MAX7219 (VSPI default pins):
+// GPIO 23 (MOSI) - DataIn (DIN)
+// GPIO 5  (SS)   - LOAD / CS
+// GPIO 18 (SCK)  - CLK
+// GPIO 4         - RELAY_PIN
 
 #include "Arduino.h"
 #include <EEPROM.h>
-
-#ifdef ESP32
 #include <WiFi.h>
 #include <WebServer.h>
-#else
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#endif
+#include <time.h>
+#include <esp_sleep.h>
 
-// Add FPSTR macro for ESP32 compatibility
+// FPSTR macro for ESP32
 #ifndef FPSTR
 #define FPSTR(p) (reinterpret_cast<const __FlashStringHelper *>(p))
 #endif
 
-WiFiClient client;
-
-#ifdef ESP32
 WebServer server(80);
-#else
-ESP8266WebServer server(80);
-#endif
 
 bool show12HourClock = true;
 bool show24HourClock = true;
@@ -59,21 +29,40 @@ bool showCustomText = false;
 String customText = "";
 bool displayPower = true;
 
+// Deep Sleep State & Config
+bool enableDeepSleep = false;
+int deepSleepStart = 2; // 2 AM default
+int deepSleepEnd = 7;   // 7 AM default
+
 // Stopwatch State
 bool showStopwatch = false;
 bool stopwatchActive = false;
 unsigned long stopwatchStartMillis = 0;
 unsigned long stopwatchElapsedMillis = 0;
+// Timekeeping State
+int h = 0, m = 0, s = 0;
+float utcOffset = 5.5; // Offset in hours (e.g., IST +5.5)
+long localEpoc = 0;
+unsigned long localMillisAtUpdate = 0;
+bool timeSynced = false;
 
-String date;
-// String temp = " Temp: --C";           // Default value before fetching data
-// String weatherCondition = "Unknown";  // Stores weather condition (e.g.,
-// Clear, Rain, Clouds)
+long getSecondOfDay() {
+  if (timeSynced) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 10)) {
+      return (long)timeinfo.tm_hour * 3600L + (long)timeinfo.tm_min * 60L + (long)timeinfo.tm_sec;
+    }
+  }
+  unsigned long elapsedSec = (millis() - localMillisAtUpdate) / 1000UL;
+  long totalSec = localEpoc + elapsedSec;
+  return ((totalSec % 86400L) + 86400L) % 86400L;
+}
 
-// String tempMin = " Min: --C";
-// String tempMax = " Max: --C";
+int getHour24() {
+  return (int)(getSecondOfDay() / 3600L);
+}
 
-// String weatherDescription = "Unknown";
+String date = "--/--/----";
 String temp = "";               // Current temperature
 String tempMin = "";            // Minimum temperature
 String tempMax = "";            // Maximum temperature
@@ -86,6 +75,18 @@ String aqiDisplay = "";
 String lat = "22.5726"; // Kolkata
 String lon = "88.3639"; // Kolkata
 int updCnt = 0; // Move updCnt here so it's globally accessible
+
+bool hasWeatherData() {
+  return (temp.length() > 0 && temp.indexOf("--") == -1 && weatherDescription.length() > 0 && weatherDescription != "Unknown");
+}
+
+bool hasAQIData() {
+  return (aqiDisplay.length() > 0 && aqiDisplay.indexOf("--") == -1);
+}
+
+bool hasDateData() {
+  return (timeSynced && date.length() > 0 && date != "--/--/----");
+}
 
 // EEPROM Addresses
 #define ADDR_MIN_TEMP 0
@@ -103,6 +104,31 @@ int updCnt = 0; // Move updCnt here so it's globally accessible
 #define ADDR_SHOW_HOLIDAY 21
 #define ADDR_AUTO_BRIGHT 22
 #define ADDR_MANUAL_BRIGHT 24
+#define ADDR_SHOW_CUSTOM 28
+#define ADDR_CUSTOM_TEXT 30
+#define ADDR_DEEP_SLEEP_EN 95
+#define ADDR_DEEP_SLEEP_ST 96
+#define ADDR_DEEP_SLEEP_END 97
+
+void writeEEPROMString(int addr, const String &str, int maxLen) {
+  int len = str.length();
+  if (len > maxLen) len = maxLen;
+  EEPROM.write(addr, (uint8_t)len);
+  for (int i = 0; i < len; i++) {
+    EEPROM.write(addr + 1 + i, (uint8_t)str[i]);
+  }
+}
+
+String readEEPROMString(int addr, int maxLen) {
+  uint8_t len = EEPROM.read(addr);
+  if (len == 0xFF || len > maxLen) return "";
+  char buf[maxLen + 1];
+  for (int i = 0; i < len; i++) {
+    buf[i] = (char)EEPROM.read(addr + 1 + i);
+  }
+  buf[len] = '\0';
+  return String(buf);
+}
 
 struct Holiday {
   int day;
@@ -190,7 +216,6 @@ Holiday holidays[] = {
 
 const int holidayCount = sizeof(holidays) / sizeof(holidays[0]);
 
-String calendarificApiKey = "9O07S1dri25aaqTwgbHHOi0vKFAv55Em";
 int currentYear = 2026;
 int currentMonth = 1;
 int currentDay = 1;
@@ -199,22 +224,10 @@ float minTemp = 100.0;
 float tempFloat1 = 0.0;
 #define NUM_MAX 8
 
-// for ESP-01 module
-// #define DIN_PIN 2 // D4
-// #define CS_PIN  3 // D9/RX
-// #define CLK_PIN 0 // D3
-
-// for NodeMCU 1.0
-#ifdef ESP32
-// Pin mapping for ESP32 (e.g. VSPI default pins)
+// Pin mapping for ESP32 (VSPI default pins)
 #define DIN_PIN 23 // Connect to MAX7219 DIN
 #define CS_PIN 5   // Connect to MAX7219 CS/LOAD
 #define CLK_PIN 18 // Connect to MAX7219 CLK
-#else
-#define DIN_PIN 15 // D8
-#define CS_PIN 13  // D7
-#define CLK_PIN 12 // D6
-#endif
 
 #include "fonts.h"
 #include "max7219.h"
@@ -441,7 +454,7 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
       cursor: not-allowed;
     }
 
-    input[type=text] {
+    input[type=text], input[type=number] {
       width: 100%;
       padding: 12px;
       border-radius: 10px;
@@ -453,7 +466,7 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
       transition: border-color 0.2s;
       margin-top: 8px;
     }
-    input[type=text]:focus {
+    input[type=text]:focus, input[type=number]:focus {
       border-color: #00f2fe;
     }
 
@@ -648,6 +661,44 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
             </div>
           </div>
 
+          <div style='height: 1px; background: rgba(255,255,255,0.08); margin: 20px 0;'></div>
+
+          <div class='form-group' style='flex-direction: column; align-items: flex-start; gap: 8px;'>
+            <div style='display: flex; align-items: center; justify-content: space-between; width: 100%;'>
+              <div>
+                <span style='font-size: 1.05rem; display: block;'>Night Deep Sleep Mode</span>
+                <span style='font-size: 0.85rem; color: var(--text-sub);'>Hardware powers down ESP32 & display during night hours</span>
+              </div>
+              <label class='switch-container'>
+                <input type='checkbox' id='deep_sleep' name='deep_sleep' value='1' %DEEP_SLEEP_CHECKED%>
+                <span class='slider'></span>
+              </label>
+            </div>
+            <div style='display: flex; gap: 15px; width: 100%; margin-top: 5px;'>
+              <div style='flex: 1;'>
+                <label style='font-size: 0.88rem; color: var(--text-sub); display: block; margin-bottom: 2px;'>Sleep Start (Hour 0-23)</label>
+                <input type='number' name='ds_start' min='0' max='23' value='%DS_START%'>
+              </div>
+              <div style='flex: 1;'>
+                <label style='font-size: 0.88rem; color: var(--text-sub); display: block; margin-bottom: 2px;'>Wakeup (Hour 0-23)</label>
+                <input type='number' name='ds_end' min='0' max='23' value='%DS_END%'>
+              </div>
+            </div>
+          </div>
+
+          <div style='height: 1px; background: rgba(255,255,255,0.08); margin: 20px 0;'></div>
+
+          <div>
+            <span style='font-size: 1.05rem; display: block; margin-bottom: 4px;'>Immediate Deep Sleep</span>
+            <span style='font-size: 0.85rem; color: var(--text-sub); display: block; margin-bottom: 12px;'>Instantly power down the ESP32 for a set duration</span>
+            <div style='display: flex; gap: 10px; flex-wrap: wrap;'>
+              <button type='button' class='sw-btn' style='background: rgba(255,255,255,0.08); padding: 8px 16px; border-radius: 8px; font-size: 0.9rem; cursor: pointer;' onclick='manualSleep(1800)'>30 Mins</button>
+              <button type='button' class='sw-btn' style='background: rgba(255,255,255,0.08); padding: 8px 16px; border-radius: 8px; font-size: 0.9rem; cursor: pointer;' onclick='manualSleep(3600)'>1 Hour</button>
+              <button type='button' class='sw-btn' style='background: rgba(255,255,255,0.08); padding: 8px 16px; border-radius: 8px; font-size: 0.9rem; cursor: pointer;' onclick='manualSleep(7200)'>2 Hours</button>
+              <button type='button' class='sw-btn' style='background: rgba(255,255,255,0.08); padding: 8px 16px; border-radius: 8px; font-size: 0.9rem; cursor: pointer;' onclick='manualSleep(0)'>Until Morning</button>
+            </div>
+          </div>
+
           <input type='hidden' name='save_advanced' value='1'>
           <input type='submit' value='Save Adjustments' style='margin-top: 25px;'>
         </form>
@@ -721,12 +772,32 @@ const char ROOT_HTML[] PROGMEM = R"rawhtml(
         });
     }
 
+    function manualSleep(secs) {
+      const promptText = secs > 0 ? ('Enter ESP32 Deep Sleep for ' + (secs/60) + ' minutes?') : 'Enter ESP32 Deep Sleep until morning?';
+      if (confirm(promptText)) {
+        const param = secs > 0 ? ('seconds=' + secs) : 'until_morning=1';
+        fetch('/sleep?' + param)
+          .then(res => res.text())
+          .then(msg => {
+            alert(msg);
+            window.location.reload();
+          });
+      }
+    }
+
     syncStatus();
     setInterval(syncStatus, 2000);
   </script>
 </body>
 </html>
 )rawhtml";
+
+void enterDeepSleep(unsigned long sleepSeconds); // forward declaration
+void checkNightDeepSleep(); // forward declaration
+void getTime(); // forward declaration
+void getTemperature(); // forward declaration
+void getAQI(); // forward declaration
+void getHoliday(); // forward declaration
 
 void handleRoot() {
   unsigned long uptimeMillis = millis();
@@ -736,7 +807,9 @@ void handleRoot() {
   unsigned long secs = (uptimeMillis / 1000) % 60;
   String uptimeStr = String(days) + "d " + String(hours) + "h " + String(mins) + "m " + String(secs) + "s";
 
-  String html = FPSTR(ROOT_HTML);
+  String html;
+  html.reserve(32000); // Pre-allocate heap to eliminate fragmentation during replacements
+  html = FPSTR(ROOT_HTML);
   
   html.replace("%UPTIME%", uptimeStr);
   html.replace("%POWER_CHECKED%", displayPower ? "checked" : "");
@@ -751,6 +824,9 @@ void handleRoot() {
   html.replace("%AUTO_BRIGHT_CHECKED%", autoBrightness ? "checked" : "");
   html.replace("%BRIGHTNESS_VAL%", String(manualBrightness));
   html.replace("%BRIGHTNESS_DISABLED%", autoBrightness ? "disabled" : "");
+  html.replace("%DEEP_SLEEP_CHECKED%", enableDeepSleep ? "checked" : "");
+  html.replace("%DS_START%", String(deepSleepStart));
+  html.replace("%DS_END%", String(deepSleepEnd));
 
   server.send(200, "text/html", html);
 }
@@ -771,8 +847,45 @@ void handleUpdate() {
     EEPROM.put(ADDR_SHOW_WEATHER, showWeather);
     EEPROM.put(ADDR_SHOW_HOLIDAY, showHoliday);
     EEPROM.commit();
-    
-    updCnt = 0; // Force data fetch immediately after settings are updated
+
+    // Check if enabled features have previous data; if not, fetch immediately
+    if (showWeather) {
+      if (!hasWeatherData() || !hasAQIData()) {
+        Serial.println("Weather enabled without previous data -> Fetching weather & AQI now...");
+        if (WiFi.status() == WL_CONNECTED) {
+          getTemperature();
+          getAQI();
+        }
+      }
+      updCnt = 10;
+    }
+
+    if (showHoliday) {
+      if (!hasDateData() || currentDay == 0) {
+        if (WiFi.status() == WL_CONNECTED) {
+          getTime();
+        }
+      }
+      getHoliday();
+      if (updCnt > 10) updCnt = 10;
+    }
+
+    if (showDate && !hasDateData()) {
+      Serial.println("Date enabled without previous time sync -> Fetching time/date now...");
+      if (WiFi.status() == WL_CONNECTED) {
+        getTime();
+      }
+    }
+
+    if ((show12HourClock || show24HourClock) && !timeSynced) {
+      Serial.println("Clock enabled without previous time sync -> Fetching time now...");
+      if (WiFi.status() == WL_CONNECTED) {
+        getTime();
+      }
+    }
+
+    updateBrightness();
+    checkNightDeepSleep();
   } 
   else if (server.hasArg("save_advanced")) {
     showCustomText = server.hasArg("show_custom");
@@ -782,17 +895,35 @@ void handleUpdate() {
     autoBrightness = server.hasArg("auto_bright");
     if (server.hasArg("brightness")) {
       manualBrightness = server.arg("brightness").toInt();
+      if (manualBrightness < 0) manualBrightness = 0;
+      if (manualBrightness > 15) manualBrightness = 15;
+    }
+    enableDeepSleep = server.hasArg("deep_sleep");
+    if (server.hasArg("ds_start")) {
+      deepSleepStart = server.arg("ds_start").toInt();
+      if (deepSleepStart < 0) deepSleepStart = 0;
+      if (deepSleepStart > 23) deepSleepStart = 23;
+    }
+    if (server.hasArg("ds_end")) {
+      deepSleepEnd = server.arg("ds_end").toInt();
+      if (deepSleepEnd < 0) deepSleepEnd = 0;
+      if (deepSleepEnd > 23) deepSleepEnd = 23;
     }
     
     EEPROM.put(ADDR_AUTO_BRIGHT, autoBrightness);
     EEPROM.put(ADDR_MANUAL_BRIGHT, manualBrightness);
+    EEPROM.put(ADDR_SHOW_CUSTOM, showCustomText);
+    writeEEPROMString(ADDR_CUSTOM_TEXT, customText, 60);
+    EEPROM.put(ADDR_DEEP_SLEEP_EN, enableDeepSleep);
+    EEPROM.put(ADDR_DEEP_SLEEP_ST, deepSleepStart);
+    EEPROM.put(ADDR_DEEP_SLEEP_END, deepSleepEnd);
     EEPROM.commit();
-    
-    updCnt = 0; // Force data fetch immediately after settings are updated
+    updateBrightness();
+    checkNightDeepSleep();
   }
 
   server.sendHeader("Location", "/");
-  server.send(303);
+  server.send(303, "text/plain", "");
 }
 
 void handleStopwatch() {
@@ -820,12 +951,8 @@ void handleStopwatch() {
   server.send(200, "text/plain", "OK");
 }
 
-
 void handleStopwatchStatus() {
-  unsigned long elapsed = stopwatchElapsedMillis;
-  if (stopwatchActive) {
-    elapsed = millis() - stopwatchStartMillis;
-  }
+  unsigned long elapsed = stopwatchActive ? (millis() - stopwatchStartMillis) : stopwatchElapsedMillis;
   
   String json = "{";
   json += "\"active\":" + String(stopwatchActive ? "true" : "false") + ",";
@@ -835,6 +962,30 @@ void handleStopwatchStatus() {
   
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", json);
+}
+
+void handleManualSleep() {
+  unsigned long sleepSec = 3600; // Default 1 hour
+  if (server.hasArg("seconds")) {
+    sleepSec = server.arg("seconds").toInt();
+  } else if (server.hasArg("minutes")) {
+    sleepSec = server.arg("minutes").toInt() * 60UL;
+  } else if (server.hasArg("hours")) {
+    sleepSec = server.arg("hours").toInt() * 3600UL;
+  } else if (server.hasArg("until_morning")) {
+    long currSec = getSecondOfDay();
+    long endSec = (long)deepSleepEnd * 3600L;
+    long diff = endSec - currSec;
+    if (diff <= 0) diff += 86400L;
+    sleepSec = diff;
+  }
+
+  if (sleepSec < 10) sleepSec = 10;
+
+  String msg = "ESP32 entering Deep Sleep for " + String(sleepSec) + "s (~" + String(sleepSec / 60) + " mins). Wakeup timer set.";
+  server.send(200, "text/plain", msg);
+  delay(500);
+  enterDeepSleep(sleepSec);
 }
 
 void showStaticIP(String ip) {
@@ -876,6 +1027,9 @@ void setup() {
   Serial.begin(115200);
   EEPROM.begin(512);
 
+  esp_sleep_wakeup_cause_t wakeupReason = esp_sleep_get_wakeup_cause();
+  bool wokeFromDeepSleep = (wakeupReason == ESP_SLEEP_WAKEUP_TIMER);
+
   initMAX7219();
   sendCmdAll(CMD_SHUTDOWN, 1);
   sendCmdAll(CMD_INTENSITY, 0);
@@ -894,6 +1048,18 @@ void setup() {
     EEPROM.get(ADDR_SHOW_HOLIDAY, showHoliday);
     EEPROM.get(ADDR_AUTO_BRIGHT, autoBrightness);
     EEPROM.get(ADDR_MANUAL_BRIGHT, manualBrightness);
+    EEPROM.get(ADDR_SHOW_CUSTOM, showCustomText);
+    customText = readEEPROMString(ADDR_CUSTOM_TEXT, 60);
+    EEPROM.get(ADDR_DEEP_SLEEP_EN, enableDeepSleep);
+    EEPROM.get(ADDR_DEEP_SLEEP_ST, deepSleepStart);
+    EEPROM.get(ADDR_DEEP_SLEEP_END, deepSleepEnd);
+
+    // Validate float and integer bounds from EEPROM to prevent NaN/garbage
+    if (isnan(minTemp) || minTemp < -50.0 || minTemp > 70.0) minTemp = 100.0;
+    if (isnan(maxTemp) || maxTemp < -50.0 || maxTemp > 70.0) maxTemp = -100.0;
+    if (manualBrightness < 0 || manualBrightness > 15) manualBrightness = 1;
+    if (deepSleepStart < 0 || deepSleepStart > 23) deepSleepStart = 2;
+    if (deepSleepEnd < 0 || deepSleepEnd > 23) deepSleepEnd = 7;
     Serial.println("Restored configs from EEPROM (V3)");
   } else if (magic == EEPROM_MAGIC_V2) {
     EEPROM.get(ADDR_MIN_TEMP, minTemp);
@@ -905,19 +1071,29 @@ void setup() {
     EEPROM.get(ADDR_SHOW_WEATHER, showWeather);
     EEPROM.get(ADDR_SHOW_HOLIDAY, showHoliday);
     EEPROM.get(ADDR_MANUAL_BRIGHT, manualBrightness);
-    // Enforce default auto brightness on upgrade
     autoBrightness = true;
+
+    // Validate bounds
+    if (isnan(minTemp) || minTemp < -50.0 || minTemp > 70.0) minTemp = 100.0;
+    if (isnan(maxTemp) || maxTemp < -50.0 || maxTemp > 70.0) maxTemp = -100.0;
+    if (manualBrightness < 0 || manualBrightness > 15) manualBrightness = 1;
 
     // Save as V3
     EEPROM.put(ADDR_MAGIC, EEPROM_MAGIC_V3);
     EEPROM.put(ADDR_AUTO_BRIGHT, autoBrightness);
+    EEPROM.put(ADDR_SHOW_CUSTOM, showCustomText);
+    writeEEPROMString(ADDR_CUSTOM_TEXT, customText, 60);
+    EEPROM.put(ADDR_DEEP_SLEEP_EN, enableDeepSleep);
+    EEPROM.put(ADDR_DEEP_SLEEP_ST, deepSleepStart);
+    EEPROM.put(ADDR_DEEP_SLEEP_END, deepSleepEnd);
     EEPROM.commit();
-    Serial.println("Upgraded configs from EEPROM (V2 -> V3) and set autoBrightness=true");
+    Serial.println("Upgraded configs from EEPROM (V2 -> V3)");
   } else {
-    // First time initialization or V1 upgrade
+    // First time initialization
     EEPROM.put(ADDR_MAGIC, EEPROM_MAGIC_V3);
     EEPROM.put(ADDR_MIN_TEMP, minTemp);
     EEPROM.put(ADDR_MAX_TEMP, maxTemp);
+    EEPROM.put(ADDR_LAST_DAY, 0);
     EEPROM.put(ADDR_DISPLAY_POWER, displayPower);
     EEPROM.put(ADDR_SHOW_12H, show12HourClock);
     EEPROM.put(ADDR_SHOW_24H, show24HourClock);
@@ -926,18 +1102,23 @@ void setup() {
     EEPROM.put(ADDR_SHOW_HOLIDAY, showHoliday);
     EEPROM.put(ADDR_AUTO_BRIGHT, autoBrightness);
     EEPROM.put(ADDR_MANUAL_BRIGHT, manualBrightness);
+    EEPROM.put(ADDR_SHOW_CUSTOM, showCustomText);
+    writeEEPROMString(ADDR_CUSTOM_TEXT, customText, 60);
+    EEPROM.put(ADDR_DEEP_SLEEP_EN, enableDeepSleep);
+    EEPROM.put(ADDR_DEEP_SLEEP_ST, deepSleepStart);
+    EEPROM.put(ADDR_DEEP_SLEEP_END, deepSleepEnd);
     EEPROM.commit();
-    Serial.println("Initialized/Upgraded EEPROM to V3 defaults");
+    Serial.println("Initialized EEPROM to V3 defaults");
   }
 
   Serial.print("Connecting WiFi ");
-#ifdef ESP32
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
   WiFi.setSleep(true); // Enable modem sleep on ESP32
-#else
-  WiFi.setSleepMode(WIFI_MODEM_SLEEP); // Enable Modem-Sleep for lifespan on ESP8266
-#endif
   WiFi.begin(ssid, password);
-  printStringWithShift("Connecting ", 16);
+  if (!wokeFromDeepSleep) {
+    printStringWithShift("Connecting ", 16);
+  }
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
@@ -948,18 +1129,24 @@ void setup() {
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW);
 
+  // Initialize native SNTP on ESP32
+  configTime((long)(5.5 * 3600), 0, "pool.ntp.org", "time.google.com");
+
   server.on("/", handleRoot);
   server.on("/update", handleUpdate);
   server.on("/stopwatch", handleStopwatch);
   server.on("/stopwatch/status", handleStopwatchStatus);
+  server.on("/sleep", handleManualSleep);
   server.begin();
   Serial.println("HTTP server started");
 
-  // Show static IP address on MAX7219 matrix for 15 seconds on boot
-  showStaticIP(WiFi.localIP().toString());
-  smartDelay(15000);
-  clr();
-  refreshAll();
+  if (!wokeFromDeepSleep) {
+    // Show static IP address on MAX7219 matrix on regular boot
+    showStaticIP(WiFi.localIP().toString());
+    smartDelay(6000);
+    clr();
+    refreshAll();
+  }
 }
 // =======================================================================
 #define MAX_DIGITS 16
@@ -972,10 +1159,19 @@ long clkTime = 0;
 int dx = 0;
 int dy = 0;
 byte del = 0;
-int h, m, s;
 // =======================================================================
 void loop() {
   server.handleClient();
+
+  // Non-blocking WiFi reconnect check
+  static unsigned long lastWifiCheck = 0;
+  if (millis() - lastWifiCheck > 10000) {
+    lastWifiCheck = millis();
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi disconnected, reconnecting...");
+      WiFi.reconnect();
+    }
+  }
 
   if (showStopwatch) {
     if (displayPower) {
@@ -989,8 +1185,22 @@ void loop() {
     return;
   }
 
+  // Auto-detect if active features have missing data and trigger fetch (with 30s throttle on failures)
+  static unsigned long lastMissingDataRetry = 0;
+  bool missingData = false;
+  if (showWeather && (!hasWeatherData() || !hasAQIData())) {
+    missingData = true;
+  }
+  if ((showDate || show12HourClock || show24HourClock) && !hasDateData()) {
+    missingData = true;
+  }
+  if (missingData && (millis() - lastMissingDataRetry > 30000)) {
+    lastMissingDataRetry = millis();
+    updCnt = 0; // Force immediate data retrieval
+  }
+
   if (updCnt <= 0) { 
-    // If only clock (or clock+date) is selected, make the interval roughly 1 hour (90 cycles of 40-45s)
+    // If only clock (or clock+date) is selected, make the interval roughly 1 hour (90 cycles)
     // If weather/holiday is selected, keep it at 10 cycles (~10-15 mins)
     if (!showWeather && !showHoliday) {
       updCnt = 90; 
@@ -999,8 +1209,6 @@ void loop() {
     }
     
     Serial.println("Getting data...");
-    // Only show "Getting data" on the matrix if we're actually fetching weather/holiday
-    // to avoid interrupting the clock display unnecessarily
     if (showWeather || showHoliday) {
       printStringWithShift("   Getting data ", 15);
     }
@@ -1020,60 +1228,39 @@ void loop() {
     clkTime = millis();
   }
 
-  // Show Date → Show Temperature → Show Time
+  // Show Date → Show Weather → Show Holiday → Show Custom Text Carousel
   unsigned long carouselDelay = (show12HourClock || show24HourClock) ? 40000 : 5000;
-  if (millis() - clkTime > carouselDelay && !del && dots && displayPower) {
+  if (millis() - clkTime > carouselDelay && !del && dots && displayPower && !showStopwatch) {
     clkTime = millis();
 
-    if (show12HourClock || show24HourClock) {
-      for (int i = 1; i < 500; i++) {
-        server.handleClient();
-        if (millis() - dotTime > 500) { // Blink dots every 500ms
-          dotTime = millis();
-          dots = !dots;
-        }
-        if (show12HourClock) {
-          updateTime();
-        } else {
-          updateTime1();
-        }
-        showAnimClock();
+    if (showDate && !showStopwatch) {
+      if (!hasDateData() && WiFi.status() == WL_CONNECTED) {
+        getTime();
       }
-    }
-
-    if (showDate) {
       showCenteredText(date);
-      smartDelay(5000);
+      smartDelay(4000);
     }
 
-    if (showWeather) {
+    if (showWeather && !showStopwatch) {
+      if ((!hasWeatherData() || !hasAQIData()) && WiFi.status() == WL_CONNECTED) {
+        getTemperature();
+        getAQI();
+      }
       printStringWithShift(temp.c_str(), 40);
-      smartDelay(5000); // Show current temperature
-      printStringWithShift(("     Max: " + String(maxTemp) + " C").c_str(), 40);
+      smartDelay(3000);
+      printStringWithShift(("     Max: " + String(maxTemp, 1) + " \xB0" "C").c_str(), 40);
       smartDelay(2000);
-
-      printStringWithShift(("     Min: " + String(minTemp) + " C").c_str(), 40);
+      printStringWithShift(("     Min: " + String(minTemp, 1) + " \xB0" "C").c_str(), 40);
       smartDelay(2000);
-      // printStringWithShift(tempMin.c_str(), 40);  // Show min temperature
-      // smartDelay(5000);
-
-      // printStringWithShift(tempMax.c_str(), 40);  // Show max temperature
-      // smartDelay(5000);
-
-      // printStringWithShift(weatherCondition.c_str(), 40);  // Show weather
-      // condition (e.g., Clouds) smartDelay(5000);
-
-      printStringWithShift(weatherDescription.c_str(),
-                           40); // Show description (e.g., scattered clouds)
-      smartDelay(5000);
-
-      printStringWithShift(windSpeed.c_str(), 40); // Show wind speed
-      smartDelay(5000);
+      printStringWithShift(weatherDescription.c_str(), 40);
+      smartDelay(3000);
+      printStringWithShift(windSpeed.c_str(), 40);
+      smartDelay(3000);
       printStringWithShift(aqiDisplay.c_str(), 40);
-      smartDelay(5000);
+      smartDelay(3000);
     }
 
-    if (showHoliday && holidayToday.length() > 0) {
+    if (showHoliday && holidayToday.length() > 0 && !showStopwatch) {
       printStringWithShift(holidayToday.c_str(), 40);
       smartDelay(3000);
       if (holidayDescription.length() > 0) {
@@ -1082,7 +1269,7 @@ void loop() {
       }
     }
 
-    if (showCustomText && customText.length() > 0) {
+    if (showCustomText && customText.length() > 0 && !showStopwatch) {
       printStringWithShift(("   " + customText).c_str(), 40);
       smartDelay(3000);
     }
@@ -1097,13 +1284,14 @@ void loop() {
   }
 
   updateBrightness(); // Adjust brightness based on time
+  checkNightDeepSleep(); // Automatically enter ESP32 hardware deep sleep if scheduled
 
   if (displayPower) {
     if (show12HourClock || show24HourClock) {
       if (show12HourClock) {
-        updateTime();       // Update the time
+        updateTime();       // Update the time in 12h format
       } else {
-        updateTime1();      // Fallback to 24h format if 12h is disabled
+        updateTime1();      // Update the time in 24h format
       }
       showAnimClock();
     } else {
@@ -1115,17 +1303,15 @@ void loop() {
   } else {
     clr();
     refreshAll();
-    smartDelay(100);      // Throttle SPI when display is powered down
+    smartDelay(100);      // Throttle when display is powered down
   }
 }
 
 // =======================================================================
 
 void showStopwatchTime() {
-  unsigned long elapsed = stopwatchElapsedMillis;
-  if (stopwatchActive) {
-    elapsed += millis() - stopwatchStartMillis;
-  }
+  // Correctly calculate elapsed time without doubling
+  unsigned long elapsed = stopwatchActive ? (millis() - stopwatchStartMillis) : stopwatchElapsedMillis;
 
   unsigned long hours = (elapsed / 3600000) % 100;
   unsigned long minutes = (elapsed / 60000) % 60;
@@ -1187,7 +1373,8 @@ void showAnimClock() {
   
   if (del == 0) {
     byte newDig[6];
-    newDig[0] = h / 10 ? h / 10 : 10;
+    // In 12-hour mode, suppress leading zero (index 10 is blank); in 24-hour mode show leading zero
+    newDig[0] = (show12HourClock && (h / 10 == 0)) ? 10 : (h / 10);
     newDig[1] = h % 10;
     newDig[2] = m / 10;
     newDig[3] = m % 10;
@@ -1236,7 +1423,7 @@ void showAnimClock() {
 // =======================================================================
 
 void showDigit(char ch, int col, const uint8_t *data) {
-  if (dy < -8 | dy > 8)
+  if (dy < -8 || dy > 8)
     return;
   int len = pgm_read_byte(data);
   int w = pgm_read_byte(data + 1 + ch * len);
@@ -1254,7 +1441,7 @@ void showDigit(char ch, int col, const uint8_t *data) {
 // =======================================================================
 
 void setCol(int col, byte v) {
-  if (dy < -8 | dy > 8)
+  if (dy < -8 || dy > 8)
     return;
   col += dx;
   if (col >= 0 && col < 8 * NUM_MAX)
@@ -1278,12 +1465,16 @@ int showChar(char ch, const uint8_t *data) {
 // =======================================================================
 
 void printCharWithShift(unsigned char c, int shiftDelay) {
-
+  // Support degree symbol (\xB0 = 176) mapping to font degree symbol (index '~' + 25 = 151)
+  if (c == 176 || c == 0xB0) {
+    c = '~' + 25;
+  }
   if (c < ' ' || c > '~' + 25)
     return;
   c -= 32;
   int w = showChar(c, font);
   for (int i = 0; i < w + 1; i++) {
+    if (showStopwatch) return; // Immediate responsiveness if stopwatch activated
     smartDelay(shiftDelay);
     scrollLeft();
     refreshAll();
@@ -1294,7 +1485,8 @@ void printCharWithShift(unsigned char c, int shiftDelay) {
 
 void printStringWithShift(const char *s, int shiftDelay) {
   while (*s) {
-    printCharWithShift(*s, shiftDelay);
+    if (showStopwatch) return;
+    printCharWithShift((unsigned char)*s, shiftDelay);
     s++;
   }
 }
@@ -1303,7 +1495,8 @@ void showCenteredText(String text) {
   clr();
   int totalWidth = 0;
   for (int i = 0; i < text.length(); i++) {
-    unsigned char c = text[i];
+    unsigned char c = (unsigned char)text[i];
+    if (c == 176 || c == 0xB0) c = '~' + 25;
     if (c < ' ' || c > '~' + 25) continue;
     c -= 32;
     int len = pgm_read_byte(font);
@@ -1316,7 +1509,8 @@ void showCenteredText(String text) {
   
   int currentCol = startCol;
   for (int i = 0; i < text.length(); i++) {
-    unsigned char c = text[i];
+    unsigned char c = (unsigned char)text[i];
+    if (c == 176 || c == 0xB0) c = '~' + 25;
     if (c < ' ' || c > '~' + 25) continue;
     c -= 32;
     int len = pgm_read_byte(font);
@@ -1334,122 +1528,123 @@ void showCenteredText(String text) {
 
 // =======================================================================
 
-float utcOffset = 5.5; // OFSET WAKTU
-long localEpoc = 0;
-long localMillisAtUpdate = 0;
+void checkDailyReset() {
+  int lastDay = 0;
+  EEPROM.get(ADDR_LAST_DAY, lastDay);
+  if (lastDay != currentDay && currentDay > 0) {
+    Serial.println("New day detected! Resetting daily min/max temps.");
+    minTemp = (tempFloat1 != 0.0) ? tempFloat1 : 100.0;
+    maxTemp = (tempFloat1 != 0.0) ? tempFloat1 : -100.0;
+    EEPROM.put(ADDR_MIN_TEMP, minTemp);
+    EEPROM.put(ADDR_MAX_TEMP, maxTemp);
+    EEPROM.put(ADDR_LAST_DAY, currentDay);
+    EEPROM.commit();
+  }
+}
 
 void getTime() {
-  WiFiClient client;
-  if (!client.connect("www.google.com", 80)) {
-    Serial.println("connection to google failed");
+  struct tm timeinfo;
+  // First attempt: ESP32 native SNTP
+  if (getLocalTime(&timeinfo, 2000)) {
+    h = timeinfo.tm_hour;
+    m = timeinfo.tm_min;
+    s = timeinfo.tm_sec;
+    currentDay = timeinfo.tm_mday;
+    currentMonth = timeinfo.tm_mon + 1;
+    currentYear = timeinfo.tm_year + 1900;
+    
+    char dateBuf[16];
+    snprintf(dateBuf, sizeof(dateBuf), "%02d/%02d/%04d", currentDay, currentMonth, currentYear);
+    date = String(dateBuf);
+    
+    localMillisAtUpdate = millis();
+    localEpoc = (h * 3600L + m * 60L + s);
+    timeSynced = true;
+    Serial.println("Time synced via NTP: " + date + " " + String(h) + ":" + String(m) + ":" + String(s));
+    checkDailyReset();
     return;
   }
 
-  client.print(String("GET / HTTP/1.1\r\n") +
-               String("Host: www.google.com\r\n") +
-               String("Connection: close\r\n\r\n"));
-  int repeatCounter = 0;
-  while (!client.available() && repeatCounter < 10) {
-    delay(500);
-    // Serial.println(".");
-    repeatCounter++;
+  // Fallback: Query Google HTTP Date header if NTP port (UDP 123) is blocked
+  Serial.println("NTP not ready, falling back to HTTP time...");
+  WiFiClient client;
+  if (!client.connect("www.google.com", 80)) {
+    Serial.println("Connection to Google failed");
+    return;
   }
 
-  String line;
-  client.setNoDelay(false);
+  // Use HEAD request to retrieve headers only (avoids downloading the entire homepage body)
+  client.print("HEAD / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n");
+  unsigned long timeout = millis();
+  while (!client.available() && (millis() - timeout < 3000)) {
+    delay(50);
+  }
+
   while (client.connected() && client.available()) {
-    line = client.readStringUntil('\n');
-    line.toUpperCase();
-    if (line.startsWith("DATE: ")) {
-      String rawDate = line.substring(6, 22); // Extract "Tue, 04 Mar 2025"
+    String line = client.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) break; // End of HTTP headers
+    
+    String upper = line;
+    upper.toUpperCase();
+    if (upper.startsWith("DATE: ")) {
+      // Example: "Date: Sun, 01 Nov 2026 18:45:00 GMT"
+      String rawDate = upper.substring(6);
+      int comma = rawDate.indexOf(',');
+      if (comma != -1) {
+        String datePart = rawDate.substring(comma + 2);
+        int d = datePart.substring(0, 2).toInt();
+        String mon = datePart.substring(3, 6);
+        int y = datePart.substring(7, 11).toInt();
+        int utcH = datePart.substring(12, 14).toInt();
+        int utcM = datePart.substring(15, 17).toInt();
+        int utcS = datePart.substring(18, 20).toInt();
 
-      String dayOfWeek = rawDate.substring(0, 3); // "Tue"
-      String day = rawDate.substring(5, 7);       // "04"
-      String month = rawDate.substring(8, 11);    // "Mar"
-      String year = rawDate.substring(12, 16);    // "2025"
-      month.trim();
-      // Convert month name to number
-      String monthNum;
-      if (month == "JAN")
-        monthNum = "01";
-      else if (month == "FEB")
-        monthNum = "02";
-      else if (month == "MAR")
-        monthNum = "03";
-      else if (month == "APR")
-        monthNum = "04";
-      else if (month == "MAY")
-        monthNum = "05";
-      else if (month == "JUN")
-        monthNum = "06";
-      else if (month == "JUL")
-        monthNum = "07";
-      else if (month == "AUG")
-        monthNum = "08";
-      else if (month == "SEP")
-        monthNum = "09";
-      else if (month == "OCT")
-        monthNum = "10";
-      else if (month == "NOV")
-        monthNum = "11";
-      else if (month == "DEC")
-        monthNum = "12";
+        int monNum = 1;
+        if (mon == "JAN") monNum = 1;
+        else if (mon == "FEB") monNum = 2;
+        else if (mon == "MAR") monNum = 3;
+        else if (mon == "APR") monNum = 4;
+        else if (mon == "MAY") monNum = 5;
+        else if (mon == "JUN") monNum = 6;
+        else if (mon == "JUL") monNum = 7;
+        else if (mon == "AUG") monNum = 8;
+        else if (mon == "SEP") monNum = 9;
+        else if (mon == "OCT") monNum = 10;
+        else if (mon == "NOV") monNum = 11;
+        else if (mon == "DEC") monNum = 12;
 
-      else
-        monthNum = "??";
-      // Final formatted date fits perfectly on an 8x8 matrix (e.g. "04/03/2025")
-      date = day + "/" + monthNum + "/" + year;
+        struct tm utcTm = {0};
+        utcTm.tm_year = y - 1900;
+        utcTm.tm_mon = monNum - 1;
+        utcTm.tm_mday = d;
+        utcTm.tm_hour = utcH;
+        utcTm.tm_min = utcM;
+        utcTm.tm_sec = utcS;
 
-      // Debugging: Print date in Serial Monitor
-      Serial.println("Formatted Date: " + date);
+        time_t utcEpoch = mktime(&utcTm);
+        time_t localEpochSec = utcEpoch + (time_t)(utcOffset * 3600L);
+        struct tm *loc = gmtime(&localEpochSec);
+        if (loc) {
+          h = loc->tm_hour;
+          m = loc->tm_min;
+          s = loc->tm_sec;
+          currentDay = loc->tm_mday;
+          currentMonth = loc->tm_mon + 1;
+          currentYear = loc->tm_year + 1900;
 
-      h = line.substring(23, 25).toInt();
-      m = line.substring(26, 28).toInt();
-      s = line.substring(29, 31).toInt();
+          char dateBuf[16];
+          snprintf(dateBuf, sizeof(dateBuf), "%02d/%02d/%04d", currentDay, currentMonth, currentYear);
+          date = String(dateBuf);
 
-      currentDay = day.toInt();
-      currentYear = year.toInt();
-
-      // Daily Reset Logic for Temperature
-      int lastDay;
-      EEPROM.get(ADDR_LAST_DAY, lastDay);
-      if (lastDay != currentDay && localEpoc != 0) {
-        Serial.println("New day detected! Resetting min/max temps.");
-        minTemp = tempFloat1 != 0 ? tempFloat1 : 100.0;
-        maxTemp = tempFloat1 != 0 ? tempFloat1 : -100.0;
-        EEPROM.put(ADDR_MIN_TEMP, minTemp);
-        EEPROM.put(ADDR_MAX_TEMP, maxTemp);
-        EEPROM.put(ADDR_LAST_DAY, currentDay);
-        EEPROM.commit();
+          localMillisAtUpdate = millis();
+          localEpoc = (h * 3600L + m * 60L + s);
+          timeSynced = true;
+          Serial.println("Time synced via HTTP: " + date + " " + String(h) + ":" + String(m) + ":" + String(s));
+          checkDailyReset();
+        }
       }
-
-      if (month == "JAN")
-        currentMonth = 1;
-      else if (month == "FEB")
-        currentMonth = 2;
-      else if (month == "MAR")
-        currentMonth = 3;
-      else if (month == "APR")
-        currentMonth = 4;
-      else if (month == "MAY")
-        currentMonth = 5;
-      else if (month == "JUN")
-        currentMonth = 6;
-      else if (month == "JUL")
-        currentMonth = 7;
-      else if (month == "AUG")
-        currentMonth = 8;
-      else if (month == "SEP")
-        currentMonth = 9;
-      else if (month == "OCT")
-        currentMonth = 10;
-      else if (month == "NOV")
-        currentMonth = 11;
-      else if (month == "DEC")
-        currentMonth = 12;
-
-      localMillisAtUpdate = millis();
-      localEpoc = (h * 60 * 60 + m * 60 + s);
+      break; // Found Date header, close connection
     }
   }
   client.stop();
@@ -1458,47 +1653,81 @@ void getTime() {
 // =======================================================================
 
 void updateTime() {
-  long curEpoch = localEpoc + ((millis() - localMillisAtUpdate) / 1000);
-  long epoch = round(curEpoch + 3600 * utcOffset + 86400L);
-  h = ((epoch % 86400L) / 3600) % 12;
-  if (h == 0)
-    h = 12; // Convert 0 to 12 for 12-hour format
+  if (timeSynced) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 10)) {
+      h = timeinfo.tm_hour % 12;
+      if (h == 0) h = 12;
+      m = timeinfo.tm_min;
+      s = timeinfo.tm_sec;
+      if (currentDay != timeinfo.tm_mday) {
+        currentDay = timeinfo.tm_mday;
+        currentMonth = timeinfo.tm_mon + 1;
+        currentYear = timeinfo.tm_year + 1900;
+        char dateBuf[16];
+        snprintf(dateBuf, sizeof(dateBuf), "%02d/%02d/%04d", currentDay, currentMonth, currentYear);
+        date = String(dateBuf);
+        checkDailyReset();
+      }
+      return;
+    }
+  }
 
-  m = (epoch % 3600) / 60;
-  s = epoch % 60;
-  
-  if (h < 0) h = 0;
-  if (h > 99) h = 99;
+  // Millis fallback
+  unsigned long elapsedSec = (millis() - localMillisAtUpdate) / 1000UL;
+  long totalSec = localEpoc + elapsedSec;
+  long secOfDay = ((totalSec % 86400L) + 86400L) % 86400L;
+  int rawH = secOfDay / 3600;
+  h = rawH % 12;
+  if (h == 0) h = 12;
+  m = (secOfDay % 3600) / 60;
+  s = secOfDay % 60;
 }
 
 void updateTime1() {
-  long curEpoch = localEpoc + ((millis() - localMillisAtUpdate) / 1000);
-  long epoch = round(curEpoch + 3600 * utcOffset + 86400L);
+  if (timeSynced) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 10)) {
+      h = timeinfo.tm_hour; // 24-hour mode
+      m = timeinfo.tm_min;
+      s = timeinfo.tm_sec;
+      if (currentDay != timeinfo.tm_mday) {
+        currentDay = timeinfo.tm_mday;
+        currentMonth = timeinfo.tm_mon + 1;
+        currentYear = timeinfo.tm_year + 1900;
+        char dateBuf[16];
+        snprintf(dateBuf, sizeof(dateBuf), "%02d/%02d/%04d", currentDay, currentMonth, currentYear);
+        date = String(dateBuf);
+        checkDailyReset();
+      }
+      return;
+    }
+  }
 
-  h = (epoch % 86400L) / 3600; // Keep 24-hour format
-  m = (epoch % 3600) / 60;
-  s = epoch % 60;
-  
-  if (h < 0) h = 0;
-  if (h > 99) h = 99;
+  // Millis fallback
+  unsigned long elapsedSec = (millis() - localMillisAtUpdate) / 1000UL;
+  long totalSec = localEpoc + elapsedSec;
+  long secOfDay = ((totalSec % 86400L) + 86400L) % 86400L;
+  h = secOfDay / 3600; // 24-hour mode
+  m = (secOfDay % 3600) / 60;
+  s = secOfDay % 60;
 }
 
-String apiKey = "aadde4019b15170339824527dc726672"; // Replace with your
-                                                    // OpenWeatherMap API key
-String city = "Kolkata";                            // Replace with your city
-String country = "IN";                              // India country code
+String apiKey = "aadde4019b15170339824527dc726672"; // OpenWeatherMap API key
+String city = "Kolkata";
+String country = "IN";
 
 void getTemperature() {
   WiFiClient client;
-  String server = "api.openweathermap.org";
+  const char *serverHost = "api.openweathermap.org";
   String request = "/data/2.5/weather?q=" + city + "," + country +
                    "&units=metric&appid=" + apiKey;
 
   Serial.println("Connecting to weather API...");
 
-  if (!client.connect(server.c_str(), 80)) {
+  if (!client.connect(serverHost, 80)) {
     Serial.println("Connection failed!");
-    temp = " Temp: --C";
+    temp = " Temp: -- \xB0" "C";
     tempMin = "--";
     tempMax = "--";
     weatherCondition = "Unknown";
@@ -1507,11 +1736,16 @@ void getTemperature() {
     return;
   }
 
-  client.print(String("GET ") + request + " HTTP/1.1\r\n" + "Host: " + server +
-               "\r\n" + "Connection: close\r\n\r\n");
+  client.print(String("GET ") + request + " HTTP/1.1\r\nHost: " + serverHost +
+               "\r\nConnection: close\r\n\r\n");
 
-  delay(1000); // Wait for response
+  unsigned long timeout = millis();
+  while (!client.available() && (millis() - timeout < 3000)) {
+    smartDelay(10);
+  }
+
   String response;
+  response.reserve(1024);
   while (client.available()) {
     response += client.readString();
   }
@@ -1523,17 +1757,14 @@ void getTemperature() {
     int tempEnd = response.indexOf(",", tempIndex);
     String tempValue = response.substring(tempIndex + 7, tempEnd);
     float tempFloat = tempValue.toFloat() + 0.03;
-    temp = "    Temp: " + String(tempFloat, 1) +
-           " \xB0"
-           "C";
+    temp = "    Temp: " + String(tempFloat, 1) + " \xB0" "C";
     bool changed = updateTemperature(tempFloat);
     if (changed) {
       EEPROM.commit();
       Serial.println("Temperature record updated in EEPROM");
     }
-
   } else {
-    temp = " Temp: --C";
+    temp = " Temp: -- \xB0" "C";
   }
 
   // Extract min and max temperature
@@ -1541,28 +1772,23 @@ void getTemperature() {
   if (minIndex != -1) {
     int minEnd = response.indexOf(",", minIndex);
     String minTempValue = response.substring(minIndex + 11, minEnd);
-    float minTempFloat = minTempValue.toFloat() - 7.0; // <- change here
-    tempMin = "      Min: " + String(minTempFloat, 1) +
-              " \xB0"
-              "C";
+    float minTempFloat = minTempValue.toFloat();
+    tempMin = "      Min: " + String(minTempFloat, 1) + " \xB0" "C";
   }
 
   int maxIndex = response.indexOf("\"temp_max\":");
   if (maxIndex != -1) {
     int maxEnd = response.indexOf(",", maxIndex);
     String maxTempValue = response.substring(maxIndex + 11, maxEnd);
-    float maxTempFloat = maxTempValue.toFloat() + 7.0; // <- change here
-    tempMax = "       Max: " + String(maxTempFloat, 2) +
-              " \xB0"
-              "C";
+    float maxTempFloat = maxTempValue.toFloat();
+    tempMax = "       Max: " + String(maxTempFloat, 1) + " \xB0" "C";
   }
 
   // Extract weather condition (main)
   int weatherIndex = response.indexOf("\"main\":\"");
   if (weatherIndex != -1) {
     int weatherEnd = response.indexOf("\"", weatherIndex + 8);
-    weatherCondition =
-        "   Weather: " + response.substring(weatherIndex + 8, weatherEnd);
+    weatherCondition = "   Weather: " + response.substring(weatherIndex + 8, weatherEnd);
   } else {
     weatherCondition = "   Weather: Unknown";
   }
@@ -1571,8 +1797,7 @@ void getTemperature() {
   int descIndex = response.indexOf("\"description\":\"");
   if (descIndex != -1) {
     int descEnd = response.indexOf("\"", descIndex + 15);
-    weatherDescription =
-        "   Weather: " + response.substring(descIndex + 15, descEnd);
+    weatherDescription = "   Weather: " + response.substring(descIndex + 15, descEnd);
   } else {
     weatherDescription = "   Desc: Unknown";
   }
@@ -1588,10 +1813,9 @@ void getTemperature() {
     windSpeed = "    Wind speed: -- km/h";
   }
 
-  // Debug output
   Serial.println(temp);
-  Serial.println(tempMin);
-  Serial.println(tempMax);
+  Serial.println("Max: " + String(maxTemp, 1) + " \xB0" "C");
+  Serial.println("Min: " + String(minTemp, 1) + " \xB0" "C");
   Serial.println(weatherCondition);
   Serial.println(weatherDescription);
   Serial.println(windSpeed);
@@ -1619,12 +1843,10 @@ bool updateTemperature(float newTemp) {
 }
 
 void updateBrightness() {
-  if (localEpoc == 0)
+  if (!timeSynced && localEpoc == 0)
     return; // Wait until time is synced
 
-  long curEpoch = localEpoc + ((millis() - localMillisAtUpdate) / 1000);
-  long epoch = round(curEpoch + 3600 * utcOffset + 86400L);
-  int hour24 = ((epoch % 86400L) / 3600);
+  int hour24 = getHour24();
 
   static int lastIntensity = -1;
   static bool lastPowerState = true; // true = ON, false = OFF
@@ -1663,6 +1885,63 @@ void updateBrightness() {
   }
 }
 
+void enterDeepSleep(unsigned long sleepSeconds) {
+  if (sleepSeconds == 0) sleepSeconds = 3600; // Default 1 hour if 0
+  Serial.print("Entering ESP32 Deep Sleep for ");
+  Serial.print(sleepSeconds);
+  Serial.println(" seconds...");
+
+  // 1. Put MAX7219 into hardware shutdown mode and clear display
+  sendCmdAll(CMD_SHUTDOWN, 0);
+  clr();
+  refreshAll();
+  digitalWrite(CS_PIN, HIGH);
+
+  // 2. Ensure relay is turned off
+  digitalWrite(RELAY_PIN, LOW);
+
+  // 3. Gracefully turn off WiFi radio
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(100);
+
+  // 4. Configure RTC timer wakeup (in microseconds)
+  uint64_t sleepUs = (uint64_t)sleepSeconds * 1000000ULL;
+  esp_sleep_enable_timer_wakeup(sleepUs);
+
+  // 5. Enter hardware deep sleep
+  esp_deep_sleep_start();
+}
+
+void checkNightDeepSleep() {
+  if (!enableDeepSleep || !timeSynced || !displayPower || showStopwatch) {
+    return;
+  }
+
+  int hour24 = getHour24();
+  long currSecOfDay = getSecondOfDay();
+  long endSecOfDay = (long)deepSleepEnd * 3600L;
+  bool inSleepWindow = false;
+  long sleepSec = 0;
+
+  if (deepSleepStart < deepSleepEnd) {
+    inSleepWindow = (hour24 >= deepSleepStart && hour24 < deepSleepEnd);
+    sleepSec = endSecOfDay - currSecOfDay;
+  } else if (deepSleepStart > deepSleepEnd) {
+    inSleepWindow = (hour24 >= deepSleepStart || hour24 < deepSleepEnd);
+    if (hour24 >= deepSleepStart) {
+      sleepSec = (86400L - currSecOfDay) + endSecOfDay;
+    } else {
+      sleepSec = endSecOfDay - currSecOfDay;
+    }
+  }
+
+  if (inSleepWindow && sleepSec >= 60) {
+    Serial.println("Night Deep Sleep window reached!");
+    enterDeepSleep((unsigned long)sleepSec);
+  }
+}
+
 void checkRelayOff(int hour, int minute) {
   if (hour == 18 && minute == 19) {
     digitalWrite(RELAY_PIN, HIGH);
@@ -1671,6 +1950,7 @@ void checkRelayOff(int hour, int minute) {
     delay(2000); // Turn off relay
   }
 }
+
 void getHoliday() {
   holidayToday = "";
   holidayDescription = "";
@@ -1681,12 +1961,6 @@ void getHoliday() {
   Serial.println(currentMonth);
 
   for (int i = 0; i < holidayCount; i++) {
-    // Debug print for 18/2 specifically
-    if (holidays[i].day == 18 && holidays[i].month == 2) {
-      Serial.print("Checking 18/2 entry: ");
-      Serial.println(holidays[i].name);
-    }
-
     if (holidays[i].day == currentDay && holidays[i].month == currentMonth) {
       Serial.print("Match found! Name: ");
       Serial.println(holidays[i].name);
@@ -1700,7 +1974,7 @@ void getHoliday() {
     }
   }
 
-  if (holidayToday != "") {
+  if (holidayToday.length() > 0) {
     Serial.println("Local Event Found!");
   } else {
     Serial.println("No local event today.");
@@ -1709,23 +1983,28 @@ void getHoliday() {
 
 void getAQI() {
   WiFiClient client;
-  String server = "api.openweathermap.org";
+  const char *serverHost = "api.openweathermap.org";
   String request =
       "/data/2.5/air_pollution?lat=" + lat + "&lon=" + lon + "&appid=" + apiKey;
 
   Serial.println("Connecting to AQI API...");
 
-  if (!client.connect(server.c_str(), 80)) {
+  if (!client.connect(serverHost, 80)) {
     Serial.println("AQI Connection failed!");
     aqiDisplay = " AQI: --";
     return;
   }
 
-  client.print(String("GET ") + request + " HTTP/1.1\r\n" + "Host: " + server +
-               "\r\n" + "Connection: close\r\n\r\n");
+  client.print(String("GET ") + request + " HTTP/1.1\r\nHost: " + serverHost +
+               "\r\nConnection: close\r\n\r\n");
 
-  delay(1000);
+  unsigned long timeout = millis();
+  while (!client.available() && (millis() - timeout < 3000)) {
+    smartDelay(10);
+  }
+
   String response;
+  response.reserve(512);
   while (client.available()) {
     response += client.readString();
   }
@@ -1734,23 +2013,13 @@ void getAQI() {
   int aqiIndex = response.indexOf("\"aqi\":");
   if (aqiIndex != -1) {
     int aqiValue = response.substring(aqiIndex + 6, aqiIndex + 7).toInt();
-    String aqiStatus = "Unknown";
+    const char *aqiStatus = "Unknown";
     switch (aqiValue) {
-    case 1:
-      aqiStatus = "Good";
-      break;
-    case 2:
-      aqiStatus = "Fair";
-      break;
-    case 3:
-      aqiStatus = "Moderate";
-      break;
-    case 4:
-      aqiStatus = "Poor";
-      break;
-    case 5:
-      aqiStatus = "Very Poor";
-      break;
+      case 1: aqiStatus = "Good"; break;
+      case 2: aqiStatus = "Fair"; break;
+      case 3: aqiStatus = "Moderate"; break;
+      case 4: aqiStatus = "Poor"; break;
+      case 5: aqiStatus = "Very Poor"; break;
     }
     aqiDisplay = "    AQI: " + String(aqiValue) + " (" + aqiStatus + ")";
   } else {
