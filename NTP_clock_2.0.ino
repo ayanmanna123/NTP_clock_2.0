@@ -26,11 +26,27 @@
 
 #include "Arduino.h"
 #include <EEPROM.h>
+
+#ifdef ESP32
+#include <WiFi.h>
+#include <WebServer.h>
+#else
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#endif
+
+// Add FPSTR macro for ESP32 compatibility
+#ifndef FPSTR
+#define FPSTR(p) (reinterpret_cast<const __FlashStringHelper *>(p))
+#endif
 
 WiFiClient client;
+
+#ifdef ESP32
+WebServer server(80);
+#else
 ESP8266WebServer server(80);
+#endif
 
 bool show12HourClock = true;
 bool show24HourClock = true;
@@ -189,9 +205,16 @@ float tempFloat1 = 0.0;
 // #define CLK_PIN 0 // D3
 
 // for NodeMCU 1.0
+#ifdef ESP32
+// Pin mapping for ESP32 (e.g. VSPI default pins)
+#define DIN_PIN 23 // Connect to MAX7219 DIN
+#define CS_PIN 5   // Connect to MAX7219 CS/LOAD
+#define CLK_PIN 18 // Connect to MAX7219 CLK
+#else
 #define DIN_PIN 15 // D8
 #define CS_PIN 13  // D7
 #define CLK_PIN 12 // D6
+#endif
 
 #include "fonts.h"
 #include "max7219.h"
@@ -908,7 +931,11 @@ void setup() {
   }
 
   Serial.print("Connecting WiFi ");
-  WiFi.setSleepMode(WIFI_MODEM_SLEEP); // Enable Modem-Sleep for lifespan
+#ifdef ESP32
+  WiFi.setSleep(true); // Enable modem sleep on ESP32
+#else
+  WiFi.setSleepMode(WIFI_MODEM_SLEEP); // Enable Modem-Sleep for lifespan on ESP8266
+#endif
   WiFi.begin(ssid, password);
   printStringWithShift("Connecting ", 16);
   while (WiFi.status() != WL_CONNECTED) {
